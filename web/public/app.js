@@ -103,6 +103,32 @@ function toast(msg, ok = true) {
   setTimeout(() => t.classList.add("hidden"), 2200);
 }
 
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // fallthrough
+  }
+
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = String(text ?? "");
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return !!ok;
+  } catch {
+    return false;
+  }
+}
+
 async function api(path, opts = {}) {
   const token = getToken();
   const headers = { "content-type": "application/json", ...(opts.headers || {}) };
@@ -911,7 +937,7 @@ async function renderSubscriptions() {
 }
 
 async function renderInstances() {
-  const [{ instances }, { subscriptions }] = await Promise.all([api("/api/instances"), api("/api/subscriptions")]);
+  const [{ instances }, { subscriptions }, { settings }] = await Promise.all([api("/api/instances"), api("/api/subscriptions"), api("/api/settings")]);
   const el = $("#view-instances");
 
   const ALL_SUB = "__ALL__";
@@ -1464,16 +1490,6 @@ async function renderInstances() {
       const inst = instances.find((i) => i.id === id);
       if (!inst) return toast("实例不存在", false);
 
-      let settings = null;
-      let sys = null;
-      try {
-        const [s, ip] = await Promise.all([api("/api/settings"), api("/api/system/ips")]);
-        settings = s?.settings || null;
-        sys = ip || null;
-      } catch (e) {
-        return toast(e.message, false);
-      }
-
       const proxyAuth = settings?.proxyAuth || { enabled: false, username: "", password: "" };
       const allowLan = !!settings?.allowLan;
       const bindAddress = String(settings?.bindAddress || "127.0.0.1").trim() || "127.0.0.1";
@@ -1490,7 +1506,6 @@ async function renderInstances() {
         host = "127.0.0.1";
         if (allowLan) {
           if (bindAddress && bindAddress !== "0.0.0.0" && bindAddress !== "127.0.0.1") host = bindAddress;
-          else if (sys?.best) host = String(sys.best);
           else if (location.hostname) host = location.hostname;
         }
         hostHint = `未设置导出 Host，已回退使用：${host}（建议在「设置」里填写或点“自动获取公网 IP”）`;
@@ -1514,10 +1529,17 @@ async function renderInstances() {
       const socks5Url = `socks5://${userinfo}${hostPart}:${port}`;
       const httpUrl = `http://${userinfo}${hostPart}:${port}`;
 
-      const authHint = proxyAuth.enabled ? "已启用认证（URL 已自动编码用户名/密码）" : "未启用认证";
+      const authHint = proxyAuth.enabled
+        ? "已启用认证（URL 已自动编码用户名/密码）"
+        : "未启用认证：链接不包含账号密码（可在「设置 → 代理认证」启用）";
       const lanHint = allowLan
         ? "已开启「允许局域网访问」：局域网设备可直接使用链接；如需公网访问，请确保防火墙/端口映射/安全组已放行实例端口。"
         : "未开启「允许局域网访问」：代理端口通常仅本机可用；如需其他设备/公网访问，请在设置开启 allow-lan，并将 bind-address 设为 0.0.0.0 或本机局域网 IP，再放行端口。";
+
+      // 一键复制（默认 SOCKS5）
+      const copied = await copyToClipboard(socks5Url);
+      if (copied) toast("已复制 SOCKS5 链接");
+      else toast("复制失败（浏览器权限限制）", false);
 
       openModal({
         title: `复制链接 · ${inst.name}`,
@@ -1543,17 +1565,14 @@ async function renderInstances() {
         `
       });
 
-      const doCopy = async (text) => {
-        try {
-          await navigator.clipboard.writeText(text);
-          toast("已复制");
-        } catch {
-          toast("复制失败（浏览器权限限制）", false);
-        }
+      const doCopy = async (text, label) => {
+        const ok = await copyToClipboard(text);
+        if (ok) toast(`已复制 ${label}`);
+        else toast("复制失败（浏览器权限限制）", false);
       };
 
-      $("#copySocks5Btn")?.addEventListener?.("click", () => doCopy(socks5Url));
-      $("#copyHttpBtn")?.addEventListener?.("click", () => doCopy(httpUrl));
+      $("#copySocks5Btn")?.addEventListener?.("click", () => doCopy(socks5Url, "SOCKS5 链接"));
+      $("#copyHttpBtn")?.addEventListener?.("click", () => doCopy(httpUrl, "HTTP 链接"));
     })
   );
 
@@ -1648,12 +1667,9 @@ async function renderPool() {
   `;
 
   $("#copyPool").addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText($("#poolText").value);
-      toast("已复制");
-    } catch (e) {
-      toast("复制失败（浏览器权限限制）", false);
-    }
+    const ok = await copyToClipboard($("#poolText").value);
+    if (ok) toast("已复制");
+    else toast("复制失败（浏览器权限限制）", false);
   });
 }
 
