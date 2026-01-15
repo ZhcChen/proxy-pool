@@ -5,6 +5,9 @@ services:
       dockerfile: Dockerfile
     container_name: mihomo-pool
     restart: unless-stopped
+    # Linux 推荐：使用 host 网络，避免端口映射/转发链路导致外部无法访问代理端口
+    # 注意：host 模式会直接占用宿主机端口（如 3320、以及你创建的 mixed-port 范围）
+    network_mode: host
     environment:
       HOST: 0.0.0.0
       PORT: 3320
@@ -14,8 +17,3 @@ services:
       PROXY_HOST: ${PROXY_HOST:-127.0.0.1}
     volumes:
       - ./data:/data
-    ports:
-      # 管理后台
-      - "3320:3320"
-      # 代理端口（mixed-port）默认从 30001 开始分配；按需调整暴露范围
-      - "30001-30100:30001-30100"

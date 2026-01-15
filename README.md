@@ -53,8 +53,8 @@ docker-compose up -d --build
 说明：
 
 - 数据会持久化到 `./data`（SQLite、订阅 YAML、mihomo 内核等）。
-- `docker-compose.yml` 默认额外暴露 `30001-30100` 作为代理端口范围（`mixed-port`）。你可以在「设置」里调整代理端口起始值，或在 compose 里扩大/缩小暴露范围。
-- 若默认暴露的端口范围不够用且你在 Linux 部署，也可以改用 `network_mode: host`（这样无需手动暴露大量端口）。
+- `docker-compose.yml` 默认使用 `network_mode: host`（Linux 推荐），避免端口映射/转发链路导致外部无法访问代理端口。
+- `host` 模式会直接占用宿主机端口：管理端口 `3320` 以及你创建的 `mixed-port` 端口范围；请确保防火墙/安全组已放行你需要的端口。
 
 ## 配置
 
