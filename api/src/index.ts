@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { isIP } from "node:net";
 import { networkInterfaces } from "node:os";
 import type { Instance, MihomoProxy, State, Subscription } from "./types";
@@ -739,6 +739,31 @@ async function routeApi(req: Request): Promise<Response> {
       };
       await storage.saveState(state);
       return badRequest(`刷新失败：${(e as Error).message}`);
+    }
+  }
+
+  // 删除订阅（安全策略：若仍有实例引用该订阅，则拒绝删除）
+  if (req.method === "DELETE" && path.startsWith("/api/subscriptions/")) {
+    const parts = path.split("/");
+    // /api/subscriptions/:id
+    if (parts.length === 4) {
+      const id = parts[3];
+      const sub = state.subscriptions.find((s) => s.id === id);
+      if (!sub) return notFound();
+
+      const usedCount = state.instances.filter((i) => i.subscriptionId === id).length;
+      if (usedCount > 0) {
+        return badRequest(`该订阅仍有 ${usedCount} 个实例在使用，请先删除实例后再删除订阅`);
+      }
+
+      state = { ...state, subscriptions: state.subscriptions.filter((s) => s.id !== id) };
+      await storage.saveState(state);
+
+      // 清理订阅快照与健康检查数据（失败不影响删除）
+      await rm(join(DATA_DIR, "subscriptions", `${id}.yaml`), { force: true }).catch(() => {});
+      storage.deleteJson(`${PROXY_HEALTH_KEY_PREFIX}${id}`);
+
+      return json({ ok: true });
     }
   }
 

@@ -222,6 +222,11 @@ export class Storage {
     db.query("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)").run(key, value);
   }
 
+  deleteKv(key: string): void {
+    const db = this.openDb();
+    db.query("DELETE FROM kv WHERE key = ?").run(key);
+  }
+
   getJson<T>(key: string): T | null {
     const raw = this.getKv(key);
     if (!raw) return null;
@@ -234,5 +239,9 @@ export class Storage {
 
   setJson(key: string, value: unknown): void {
     this.setKv(key, JSON.stringify(value));
+  }
+
+  deleteJson(key: string): void {
+    this.deleteKv(key);
   }
 }

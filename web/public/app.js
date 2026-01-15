@@ -716,6 +716,7 @@ async function renderSubscriptions() {
                         <td>
                           <button class="btn" data-proxies="${escapeHtml(s.id)}">节点</button>
                           ${s.url ? `<button class="btn" data-refresh="${escapeHtml(s.id)}">刷新</button>` : ""}
+                          <button class="btn danger" data-sub-del="${escapeHtml(s.id)}">删除</button>
                         </td>
                       </tr>
                     `;
@@ -767,6 +768,29 @@ async function renderSubscriptions() {
         render();
       } catch (e) {
         toast(e.message, false);
+      }
+    })
+  );
+
+  $$("[data-sub-del]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.subDel;
+      const sub = subscriptions.find((s) => s.id === id);
+      const name = sub ? sub.name : id;
+      if (!confirm(`确定删除订阅「${name}」？\n\n注意：如果该订阅仍有实例在使用，会拒绝删除。`)) return;
+
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "删除中...";
+      try {
+        await api(`/api/subscriptions/${id}`, { method: "DELETE" });
+        toast("已删除");
+        render();
+      } catch (e) {
+        toast(e.message, false);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = old;
       }
     })
   );
