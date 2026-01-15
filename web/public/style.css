@@ -78,6 +78,7 @@ body {
 
 .container {
   /* 管理后台以信息密度为主：默认拉满宽度，避免按钮/表格过早换行 */
+  width: 100%;
   max-width: 100%;
   margin: 0 auto;
   padding: 18px 18px 48px 18px;
@@ -111,10 +112,14 @@ body {
 
 .panel-header {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 10px;
+}
+
+.panel-header > :first-child {
+  min-width: 0;
 }
 
 .panel-title {
@@ -129,6 +134,7 @@ body {
   font-size: 12px;
   color: var(--muted);
   line-height: 1.45;
+  max-width: 90ch;
 }
 
 .panel-actions {
@@ -235,14 +241,19 @@ textarea {
   font-size: 12px;
   color: var(--muted);
   line-height: 1.45;
+  max-width: 90ch;
 }
 
 .page-header {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin: 6px 2px 10px 2px;
+}
+
+.page-header > :first-child {
+  min-width: 0;
 }
 
 .page-title {
@@ -257,6 +268,7 @@ textarea {
   font-size: 13px;
   color: var(--muted);
   line-height: 1.5;
+  max-width: 90ch;
 }
 
 .section-title {
@@ -331,6 +343,27 @@ textarea {
 .table {
   width: 100%;
   border-collapse: collapse;
+}
+
+.table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-wrap::-webkit-scrollbar {
+  height: 8px;
+}
+
+.table-wrap::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+}
+
+.table-wrap::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .table th,
@@ -494,8 +527,45 @@ textarea {
 .btn-group {
   display: flex;
   gap: 8px;
-  flex-wrap: wrap;
+  /* 不换行：按钮过多时横向滚动，避免挤压换行 */
+  flex-wrap: nowrap;
   align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  padding-bottom: 2px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.btn-group::-webkit-scrollbar {
+  height: 6px;
+}
+
+.btn-group::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+}
+
+.btn-group::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.btn-group .btn {
+  flex: 0 0 auto;
+}
+
+/* Flex gap 兼容：少数旧浏览器不支持 gap，会导致按钮贴在一起 */
+@supports not (gap: 8px) {
+  .panel-actions > * + * {
+    margin-left: 8px;
+  }
+  #modalActions > * + * {
+    margin-left: 8px;
+  }
+  .btn-group > * + * {
+    margin-left: 8px;
+  }
 }
 
 .modal-body {

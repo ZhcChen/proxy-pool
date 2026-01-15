@@ -694,40 +694,42 @@ async function renderSubscriptions() {
         </div>
       </div>
 
-      <table class="table">
-        <thead>
-          <tr><th>名称</th><th>URL</th><th>节点数</th><th>更新时间</th><th>状态</th><th>操作</th></tr>
-        </thead>
-        <tbody>
-          ${
-            subscriptions.length
-              ? subscriptions
-                  .map((s) => {
-                    const name = escapeHtml(s.name);
-                    const url = escapeHtml(s.url || "-");
-                    const err = s.lastError ? escapeHtml(s.lastError) : "";
-                    return `
-                      <tr>
-                        <td>${name}</td>
-                        <td style="max-width:360px;word-break:break-all;color:var(--muted)">${url}</td>
-	                        <td>${s.proxies.length}</td>
-	                        <td>${fmtDate(s.updatedAt)}</td>
-	                        <td>${s.lastError ? `<span class="badge bad">错误</span> ${err}` : `<span class="badge ok">正常</span>`}</td>
-	                        <td>
-	                          <div class="btn-group">
-	                            <button class="btn" data-proxies="${escapeHtml(s.id)}">节点</button>
-	                            ${s.url ? `<button class="btn" data-refresh="${escapeHtml(s.id)}">刷新</button>` : ""}
-	                            <button class="btn danger" data-sub-del="${escapeHtml(s.id)}">删除</button>
-	                          </div>
-	                        </td>
-	                      </tr>
-	                    `;
-	                  })
-	                  .join("")
-              : `<tr><td colspan="6" class="muted">暂无订阅，请先添加一个订阅或粘贴 YAML。</td></tr>`
-          }
-        </tbody>
-      </table>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr><th>名称</th><th>URL</th><th>节点数</th><th>更新时间</th><th>状态</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            ${
+              subscriptions.length
+                ? subscriptions
+                    .map((s) => {
+                      const name = escapeHtml(s.name);
+                      const url = escapeHtml(s.url || "-");
+                      const err = s.lastError ? escapeHtml(s.lastError) : "";
+                      return `
+                        <tr>
+                          <td>${name}</td>
+                          <td style="max-width:360px;word-break:break-all;color:var(--muted)">${url}</td>
+	                          <td>${s.proxies.length}</td>
+	                          <td>${fmtDate(s.updatedAt)}</td>
+	                          <td>${s.lastError ? `<span class="badge bad">错误</span> ${err}` : `<span class="badge ok">正常</span>`}</td>
+	                          <td>
+	                            <div class="btn-group">
+	                              <button class="btn" data-proxies="${escapeHtml(s.id)}">节点</button>
+	                              ${s.url ? `<button class="btn" data-refresh="${escapeHtml(s.id)}">刷新</button>` : ""}
+	                              <button class="btn danger" data-sub-del="${escapeHtml(s.id)}">删除</button>
+	                            </div>
+	                          </td>
+	                        </tr>
+	                      `;
+	                    })
+	                    .join("")
+                : `<tr><td colspan="6" class="muted">暂无订阅，请先添加一个订阅或粘贴 YAML。</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
     </div>
   `;
 
@@ -872,14 +874,16 @@ async function renderSubscriptions() {
 	                <div class="badge" id="proxyCount">共 ${items.length} 个</div>
 	              </div>
 	            </div>
-	            <table class="table">
-	              <thead>
-	                <tr><th>名称</th><th>类型</th><th>地址</th><th>网络</th><th>TLS</th><th>UDP</th><th>可用性</th><th>操作</th></tr>
-	              </thead>
-	              <tbody id="proxyRows">
-	                <tr><td colspan="8" class="muted">${items.length ? "加载中..." : "该订阅暂无节点（proxies 为空）。"}</td></tr>
-	              </tbody>
-	            </table>
+	            <div class="table-wrap">
+	              <table class="table">
+	                <thead>
+	                  <tr><th>名称</th><th>类型</th><th>地址</th><th>网络</th><th>TLS</th><th>UDP</th><th>可用性</th><th>操作</th></tr>
+	                </thead>
+	                <tbody id="proxyRows">
+	                  <tr><td colspan="8" class="muted">${items.length ? "加载中..." : "该订阅暂无节点（proxies 为空）。"}</td></tr>
+	                </tbody>
+	              </table>
+	            </div>
 	          `
 	        });
 
@@ -1088,80 +1092,82 @@ async function renderInstances() {
         </div>
       </div>
 
-      <table class="table">
-        <thead>
-          <tr><th>名称</th><th>端口</th><th>PID</th><th>运行状态</th><th>可用性</th><th>创建时间</th><th>操作</th></tr>
-        </thead>
-        <tbody>
-          ${
-            instances.length
-              ? instances
-                  .map((i) => {
-                    const running = i.runtime?.running;
-                    const name = escapeHtml(i.name);
-                    const rawProxyName = String(i.proxyName || "");
-                    const proxyName = escapeHtml(rawProxyName);
-                    const autoSwitch = !!i.autoSwitch;
-                    const pid = i.runtime?.pid ?? "-";
-                    const health = i.health;
-                    const activeProxyName =
-                      typeof health?.proxyName === "string" && health.proxyName.trim() ? health.proxyName.trim() : "";
-                    const activeLine =
-                      activeProxyName && activeProxyName !== rawProxyName
-                        ? `<div style="color:var(--muted);font-size:12px;margin-top:4px">当前=${escapeHtml(activeProxyName)}</div>`
-                        : "";
-                    const autoSwitchBadge = autoSwitch
-                      ? `<span class="badge ok">自动切换：开</span>`
-                      : `<span class="badge">自动切换：关</span>`;
-                    const isChecking = checkingInstances.has(i.id);
-                    let healthHtml = `<span class="badge">未检测</span>`;
-                    if (isChecking) {
-                      healthHtml = `<span class="badge" style="background:rgba(100,149,237,0.15);color:#6495ed">检测中...</span>`;
-                    } else if (health?.checkedAt) {
-                      const at = fmtDate(health.checkedAt);
-                      const ms = typeof health.latencyMs === "number" ? `${Math.round(health.latencyMs)}ms` : "-";
-                      if (health.ok) {
-                        healthHtml = `<span class="badge ok">可用</span> <span class="muted">${ms}</span><div class="muted" style="font-size:12px;margin-top:4px">${at}</div>`;
-                      } else {
-                        const err = escapeHtml(health.error || "不可用");
-                        healthHtml = `<span class="badge bad">不可用</span> <span class="muted">${ms}</span><div class="muted" style="font-size:12px;margin-top:4px;max-width:320px;word-break:break-all">${err}</div><div class="muted" style="font-size:12px;margin-top:4px">${at}</div>`;
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr><th>名称</th><th>端口</th><th>PID</th><th>运行状态</th><th>可用性</th><th>创建时间</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            ${
+              instances.length
+                ? instances
+                    .map((i) => {
+                      const running = i.runtime?.running;
+                      const name = escapeHtml(i.name);
+                      const rawProxyName = String(i.proxyName || "");
+                      const proxyName = escapeHtml(rawProxyName);
+                      const autoSwitch = !!i.autoSwitch;
+                      const pid = i.runtime?.pid ?? "-";
+                      const health = i.health;
+                      const activeProxyName =
+                        typeof health?.proxyName === "string" && health.proxyName.trim() ? health.proxyName.trim() : "";
+                      const activeLine =
+                        activeProxyName && activeProxyName !== rawProxyName
+                          ? `<div style="color:var(--muted);font-size:12px;margin-top:4px">当前=${escapeHtml(activeProxyName)}</div>`
+                          : "";
+                      const autoSwitchBadge = autoSwitch
+                        ? `<span class="badge ok">自动切换：开</span>`
+                        : `<span class="badge">自动切换：关</span>`;
+                      const isChecking = checkingInstances.has(i.id);
+                      let healthHtml = `<span class="badge">未检测</span>`;
+                      if (isChecking) {
+                        healthHtml = `<span class="badge" style="background:rgba(100,149,237,0.15);color:#6495ed">检测中...</span>`;
+                      } else if (health?.checkedAt) {
+                        const at = fmtDate(health.checkedAt);
+                        const ms = typeof health.latencyMs === "number" ? `${Math.round(health.latencyMs)}ms` : "-";
+                        if (health.ok) {
+                          healthHtml = `<span class="badge ok">可用</span> <span class="muted">${ms}</span><div class="muted" style="font-size:12px;margin-top:4px">${at}</div>`;
+                        } else {
+                          const err = escapeHtml(health.error || "不可用");
+                          healthHtml = `<span class="badge bad">不可用</span> <span class="muted">${ms}</span><div class="muted" style="font-size:12px;margin-top:4px;max-width:320px;word-break:break-all">${err}</div><div class="muted" style="font-size:12px;margin-top:4px">${at}</div>`;
+                        }
                       }
-                    }
-                    return `
-                      <tr>
-                        <td style="max-width:420px;word-break:break-all">
-                          ${name}
-                          <div style="color:var(--muted);font-size:12px;margin-top:4px">proxy=${proxyName}</div>
-                          ${activeLine}
-                          <div style="margin-top:8px">${autoSwitchBadge}</div>
-                        </td>
-                        <td>${i.mixedPort}</td>
-                        <td>${pid}</td>
-	                        <td>${running ? `<span class="badge ok">运行中</span>` : `<span class="badge bad">已停止</span>`}</td>
-	                        <td>${healthHtml}</td>
-	                        <td>${fmtDate(i.createdAt)}</td>
-	                        <td>
-	                          <div class="btn-group">
-	                            ${
-	                              running
-	                                ? `<button class="btn danger" data-stop="${escapeHtml(i.id)}">停止</button>`
-	                                : `<button class="btn ok" data-start="${escapeHtml(i.id)}">启动</button>`
-	                            }
-	                            <button class="btn" data-check="${escapeHtml(i.id)}">检测</button>
-	                            <button class="btn" data-copy="${escapeHtml(i.id)}">复制链接</button>
-	                            <button class="btn" data-edit="${escapeHtml(i.id)}">编辑</button>
-	                            <button class="btn" data-logs="${escapeHtml(i.id)}">日志</button>
-	                            <button class="btn danger" data-del="${escapeHtml(i.id)}">删除</button>
-	                          </div>
-	                        </td>
-	                      </tr>
-	                    `;
-	                  })
-	                  .join("")
-              : `<tr><td colspan="7" class="muted">暂无实例，请先创建一个实例。</td></tr>`
-          }
-        </tbody>
-      </table>
+                      return `
+                        <tr>
+                          <td style="max-width:420px;word-break:break-all">
+                            ${name}
+                            <div style="color:var(--muted);font-size:12px;margin-top:4px">proxy=${proxyName}</div>
+                            ${activeLine}
+                            <div style="margin-top:8px">${autoSwitchBadge}</div>
+                          </td>
+                          <td>${i.mixedPort}</td>
+                          <td>${pid}</td>
+	                          <td>${running ? `<span class="badge ok">运行中</span>` : `<span class="badge bad">已停止</span>`}</td>
+	                          <td>${healthHtml}</td>
+	                          <td>${fmtDate(i.createdAt)}</td>
+	                          <td>
+	                            <div class="btn-group">
+	                              ${
+	                                running
+	                                  ? `<button class="btn danger" data-stop="${escapeHtml(i.id)}">停止</button>`
+	                                  : `<button class="btn ok" data-start="${escapeHtml(i.id)}">启动</button>`
+	                              }
+	                              <button class="btn" data-check="${escapeHtml(i.id)}">检测</button>
+	                              <button class="btn" data-copy="${escapeHtml(i.id)}">复制链接</button>
+	                              <button class="btn" data-edit="${escapeHtml(i.id)}">编辑</button>
+	                              <button class="btn" data-logs="${escapeHtml(i.id)}">日志</button>
+	                              <button class="btn danger" data-del="${escapeHtml(i.id)}">删除</button>
+	                            </div>
+	                          </td>
+	                        </tr>
+	                      `;
+	                    })
+	                    .join("")
+                : `<tr><td colspan="7" class="muted">暂无实例，请先创建一个实例。</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
     </div>
   `;
 
