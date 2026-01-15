@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mihomo-pool</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="header">
+      <div class="title">mihomo-pool</div>
+      <nav class="nav">
+        <button data-tab="instances" class="tab active">实例</button>
+        <button data-tab="subscriptions" class="tab">订阅</button>
+        <button data-tab="settings" class="tab">设置</button>
+        <button data-tab="pool" class="tab">代理池</button>
+      </nav>
+    </header>
+
+    <main class="container">
+      <section id="view-instances" class="view"></section>
+      <section id="view-subscriptions" class="view hidden"></section>
+      <section id="view-settings" class="view hidden"></section>
+      <section id="view-pool" class="view hidden"></section>
+    </main>
+
+    <div id="toast" class="toast hidden"></div>
+    <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="panel modal-card">
+        <div class="modal-header">
+          <div class="modal-title" id="modalTitle"></div>
+          <div class="modal-actions">
+            <div id="modalActions"></div>
+            <button class="btn ghost sm" id="modalClose" type="button">关闭</button>
+          </div>
+        </div>
+        <div class="modal-body" id="modalBody"></div>
+      </div>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

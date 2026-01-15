@@ -1,0 +1,16 @@
+{
+  "name": "mihomo-pool",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "api",
+    "web"
+  ],
+  "scripts": {
+    "dev": "bun run dev:api",
+    "dev:api": "bun --cwd=api run dev",
+    "start": "bun run start:api",
+    "start:api": "bun --cwd=api run start"
+  }
+}
