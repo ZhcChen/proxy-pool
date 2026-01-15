@@ -710,18 +710,20 @@ async function renderSubscriptions() {
                       <tr>
                         <td>${name}</td>
                         <td style="max-width:360px;word-break:break-all;color:var(--muted)">${url}</td>
-                        <td>${s.proxies.length}</td>
-                        <td>${fmtDate(s.updatedAt)}</td>
-                        <td>${s.lastError ? `<span class="badge bad">错误</span> ${err}` : `<span class="badge ok">正常</span>`}</td>
-                        <td>
-                          <button class="btn" data-proxies="${escapeHtml(s.id)}">节点</button>
-                          ${s.url ? `<button class="btn" data-refresh="${escapeHtml(s.id)}">刷新</button>` : ""}
-                          <button class="btn danger" data-sub-del="${escapeHtml(s.id)}">删除</button>
-                        </td>
-                      </tr>
-                    `;
-                  })
-                  .join("")
+	                        <td>${s.proxies.length}</td>
+	                        <td>${fmtDate(s.updatedAt)}</td>
+	                        <td>${s.lastError ? `<span class="badge bad">错误</span> ${err}` : `<span class="badge ok">正常</span>`}</td>
+	                        <td>
+	                          <div class="btn-group">
+	                            <button class="btn" data-proxies="${escapeHtml(s.id)}">节点</button>
+	                            ${s.url ? `<button class="btn" data-refresh="${escapeHtml(s.id)}">刷新</button>` : ""}
+	                            <button class="btn danger" data-sub-del="${escapeHtml(s.id)}">删除</button>
+	                          </div>
+	                        </td>
+	                      </tr>
+	                    `;
+	                  })
+	                  .join("")
               : `<tr><td colspan="6" class="muted">暂无订阅，请先添加一个订阅或粘贴 YAML。</td></tr>`
           }
         </tbody>
@@ -1135,25 +1137,27 @@ async function renderInstances() {
                         </td>
                         <td>${i.mixedPort}</td>
                         <td>${pid}</td>
-                        <td>${running ? `<span class="badge ok">运行中</span>` : `<span class="badge bad">已停止</span>`}</td>
-                        <td>${healthHtml}</td>
-                        <td>${fmtDate(i.createdAt)}</td>
-                        <td>
-                          ${
-                            running
-                              ? `<button class="btn danger" data-stop="${escapeHtml(i.id)}">停止</button>`
-                              : `<button class="btn ok" data-start="${escapeHtml(i.id)}">启动</button>`
-                          }
-                          <button class="btn" data-check="${escapeHtml(i.id)}">检测</button>
-                          <button class="btn" data-copy="${escapeHtml(i.id)}">复制链接</button>
-                          <button class="btn" data-edit="${escapeHtml(i.id)}">编辑</button>
-                          <button class="btn" data-logs="${escapeHtml(i.id)}">日志</button>
-                          <button class="btn danger" data-del="${escapeHtml(i.id)}">删除</button>
-                        </td>
-                      </tr>
-                    `;
-                  })
-                  .join("")
+	                        <td>${running ? `<span class="badge ok">运行中</span>` : `<span class="badge bad">已停止</span>`}</td>
+	                        <td>${healthHtml}</td>
+	                        <td>${fmtDate(i.createdAt)}</td>
+	                        <td>
+	                          <div class="btn-group">
+	                            ${
+	                              running
+	                                ? `<button class="btn danger" data-stop="${escapeHtml(i.id)}">停止</button>`
+	                                : `<button class="btn ok" data-start="${escapeHtml(i.id)}">启动</button>`
+	                            }
+	                            <button class="btn" data-check="${escapeHtml(i.id)}">检测</button>
+	                            <button class="btn" data-copy="${escapeHtml(i.id)}">复制链接</button>
+	                            <button class="btn" data-edit="${escapeHtml(i.id)}">编辑</button>
+	                            <button class="btn" data-logs="${escapeHtml(i.id)}">日志</button>
+	                            <button class="btn danger" data-del="${escapeHtml(i.id)}">删除</button>
+	                          </div>
+	                        </td>
+	                      </tr>
+	                    `;
+	                  })
+	                  .join("")
               : `<tr><td colspan="7" class="muted">暂无实例，请先创建一个实例。</td></tr>`
           }
         </tbody>

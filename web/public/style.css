@@ -462,6 +462,42 @@ textarea {
   gap: 8px;
 }
 
+#modalActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+#modalActions::-webkit-scrollbar {
+  height: 6px;
+}
+
+#modalActions::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+}
+
+#modalActions::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#modalActions .btn {
+  flex: 0 0 auto;
+}
+
+.btn-group {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 .modal-body {
   padding: 14px;
   overflow: auto;
