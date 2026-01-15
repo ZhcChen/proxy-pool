@@ -289,7 +289,11 @@ async function renderSettings() {
   const repo = status.repo;
   const proxyAuth = settings.proxyAuth || { enabled: false, username: "", password: "" };
   el.innerHTML = `
-    ${pageHeader("设置", "内核安装、端口分配与运行参数。")}
+    ${pageHeader(
+      "设置",
+      "内核安装、端口分配与运行参数。",
+      `<button class="btn primary" id="saveSettings">保存</button><button class="btn danger" id="logout">退出登录</button>`
+    )}
     <div style="margin: 0 2px 10px 2px" class="badge">说明：本页设置会在「实例启动/重启」时写入实例配置；已在运行的实例需要停止后再启动才会生效。</div>
 
     <div class="grid">
@@ -451,10 +455,6 @@ async function renderSettings() {
         <div>
           <div class="panel-title">端口与日志</div>
           <div class="panel-subtitle">用于自动分配每个实例的端口，并控制管理页日志缓存大小。</div>
-        </div>
-        <div class="panel-actions">
-          <button class="btn primary" id="saveSettings">保存</button>
-          <button class="btn danger" id="logout">退出登录</button>
         </div>
       </div>
 
