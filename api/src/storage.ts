@@ -79,6 +79,7 @@ const DEFAULT_STATE: State = {
     maxLogLines: 800,
     healthCheckIntervalSec: 60,
     healthCheckUrl: "http://www.gstatic.com/generate_204",
+    exportHost: "",
     proxyAuth: generateProxyAuth()
   },
   subscriptions: [],
@@ -146,6 +147,7 @@ export class Storage {
         typeof settings.healthCheckUrl === "string" && settings.healthCheckUrl.trim()
           ? settings.healthCheckUrl.trim()
           : fallback.settings.healthCheckUrl,
+      exportHost: typeof settings.exportHost === "string" ? settings.exportHost.trim() : fallback.settings.exportHost,
       proxyAuth
     };
 

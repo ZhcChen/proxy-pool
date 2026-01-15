@@ -102,6 +102,8 @@ func startServerWithDataDir(t *testing.T, root string, port int, dataDir string)
 		fmt.Sprintf("PORT=%d", port),
 		fmt.Sprintf("DATA_DIR=%s", dataDir),
 		fmt.Sprintf("WEB_DIR=%s", filepath.Join(root, "web", "public")),
+		// 避免测试时依赖外网 IP 探测（加快速度并减少不稳定因素）
+		"PUBLIC_IP_OVERRIDE=203.0.113.10",
 	)
 
 	stdout, err := cmd.StdoutPipe()

@@ -34,6 +34,28 @@ bun run dev
 
 > 安全提示：当前版本使用本地 JWT 登录态（默认 30 天有效期），请不要把管理端口直接暴露到公网。
 
+## Docker 部署（docker compose）
+
+1. 启动：
+
+```bash
+docker compose up -d --build
+```
+
+如果你的 Docker 版本较旧，也可以用 `docker-compose` 命令：
+
+```bash
+docker-compose up -d --build
+```
+
+2. 打开管理页：`http://你的服务器IP:3320`
+
+说明：
+
+- 数据会持久化到 `./data`（SQLite、订阅 YAML、mihomo 内核等）。
+- `docker-compose.yml` 默认额外暴露 `30001-30100` 作为代理端口范围（`mixed-port`）。你可以在「设置」里调整代理端口起始值，或在 compose 里扩大/缩小暴露范围。
+- 若默认暴露的端口范围不够用且你在 Linux 部署，也可以改用 `network_mode: host`（这样无需手动暴露大量端口）。
+
 ## 配置
 
 - 在 Web 页面「设置」里点击「一键安装内核」，自动从 GitHub Release 下载并安装适配你系统的 `mihomo`
@@ -45,7 +67,7 @@ bun run dev
 - `PORT`：管理页端口（默认 `3320`）
 - `DATA_DIR`：数据目录（默认 `./data`）
 - `WEB_DIR`：静态管理页目录（默认 `./web/public`）
-- `PROXY_HOST`：导出代理池时使用的 host（默认 `127.0.0.1`，用于你在局域网内复制给其他机器使用）
+- `PROXY_HOST`：用于“首次启动”初始化「导出 Host」（之后会持久化到 SQLite，并可在「设置」里修改）。若未设置导出 Host，服务会尝试自动获取公网 IP 并写入。
 
 ## 使用方式（代理池）
 

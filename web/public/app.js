@@ -397,6 +397,32 @@ async function renderSettings() {
     <div class="panel">
       <div class="panel-header">
         <div>
+          <div class="panel-title">导出与复制</div>
+          <div class="panel-subtitle">用于「复制实例链接」与「代理池」导出时的 host 选择。</div>
+        </div>
+        <div class="panel-actions">
+          <button class="btn" id="detectPublicIp" type="button">自动获取公网 IP</button>
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>导出 Host（公网 IP/域名）</label>
+          <input id="exportHost" value="${escapeHtml(settings.exportHost || "")}" placeholder="例如：1.2.3.4 或 example.com" />
+          <div class="help">
+            生成「复制链接」与「代理池」列表时使用的 host。它只影响“显示/复制”的地址，不会改变实例实际监听地址（由「监听地址/允许局域网访问」控制）。建议：有域名就填域名；否则可点右上角自动获取公网 IP。若你只在局域网使用，也可以填局域网 IP。
+          </div>
+        </div>
+      </div>
+
+      <div class="help" style="margin-top:10px">
+        提示：公网 IP 探测依赖外部 IP 服务；在 NAT/反代/安全组等场景，探测结果可能与外部可访问 IP 不一致，请以实际访问为准。
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
           <div class="panel-title">端口与日志</div>
           <div class="panel-subtitle">用于自动分配每个实例的端口，并控制管理页日志缓存大小。</div>
         </div>
@@ -448,6 +474,7 @@ async function renderSettings() {
         bindAddress: $("#bindAddress").value.trim() || "127.0.0.1",
         allowLan: $("#allowLan").value === "true",
         logLevel: $("#logLevel").value,
+        exportHost: $("#exportHost").value.trim(),
         baseMixedPort: Number($("#baseMixedPort").value),
         baseControllerPort: Number($("#baseControllerPort").value),
         maxLogLines: Number($("#maxLogLines").value),
@@ -508,6 +535,30 @@ async function renderSettings() {
     clearToken();
     toast("已退出");
     render();
+  });
+
+  $("#detectPublicIp")?.addEventListener?.("click", async () => {
+    const input = $("#exportHost");
+    const current = input.value.trim();
+    if (current && !confirm("当前已设置导出 Host，是否用自动获取的公网 IP 覆盖？")) return;
+
+    const btn = $("#detectPublicIp");
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "获取中...";
+    try {
+      const { ip, exportHost } = await api("/api/settings/detect-public-ip", {
+        method: "POST",
+        body: JSON.stringify({ force: !!current })
+      });
+      input.value = exportHost || ip || "";
+      toast(`已获取公网 IP：${ip}`);
+    } catch (e) {
+      toast(e.message, false);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
   });
 
   $("#resetProxyAuth").addEventListener("click", async () => {
@@ -1414,9 +1465,11 @@ async function renderInstances() {
       if (!inst) return toast("实例不存在", false);
 
       let settings = null;
+      let sys = null;
       try {
-        const res = await api("/api/settings");
-        settings = res?.settings || null;
+        const [s, ip] = await Promise.all([api("/api/settings"), api("/api/system/ips")]);
+        settings = s?.settings || null;
+        sys = ip || null;
       } catch (e) {
         return toast(e.message, false);
       }
@@ -1424,14 +1477,23 @@ async function renderInstances() {
       const proxyAuth = settings?.proxyAuth || { enabled: false, username: "", password: "" };
       const allowLan = !!settings?.allowLan;
       const bindAddress = String(settings?.bindAddress || "127.0.0.1").trim() || "127.0.0.1";
+      const exportHost = String(settings?.exportHost || "").trim();
 
       // 选择一个对用户可用的 host：
-      // - allowLan=false：默认只本机可用，使用 127.0.0.1
-      // - allowLan=true：优先使用 bindAddress（若不是 0.0.0.0/127.0.0.1），否则使用当前访问的 hostname
-      let host = "127.0.0.1";
-      if (allowLan) {
-        if (bindAddress && bindAddress !== "0.0.0.0" && bindAddress !== "127.0.0.1") host = bindAddress;
-        else if (location.hostname) host = location.hostname;
+      // - 优先使用「设置」里的导出 Host（公网 IP/域名/局域网 IP 都可）
+      // - 若未设置，则回退：allowLan=false -> 127.0.0.1；allowLan=true -> bindAddress/本机 IP/当前 hostname
+      let host = exportHost;
+      let hostHint = "";
+      if (host) {
+        hostHint = `已使用导出 Host：${host}（可在「设置」里修改）`;
+      } else {
+        host = "127.0.0.1";
+        if (allowLan) {
+          if (bindAddress && bindAddress !== "0.0.0.0" && bindAddress !== "127.0.0.1") host = bindAddress;
+          else if (sys?.best) host = String(sys.best);
+          else if (location.hostname) host = location.hostname;
+        }
+        hostHint = `未设置导出 Host，已回退使用：${host}（建议在「设置」里填写或点“自动获取公网 IP”）`;
       }
 
       const wrapHost = (h) => {
@@ -1453,6 +1515,9 @@ async function renderInstances() {
       const httpUrl = `http://${userinfo}${hostPart}:${port}`;
 
       const authHint = proxyAuth.enabled ? "已启用认证（URL 已自动编码用户名/密码）" : "未启用认证";
+      const lanHint = allowLan
+        ? "已开启「允许局域网访问」：局域网设备可直接使用链接；如需公网访问，请确保防火墙/端口映射/安全组已放行实例端口。"
+        : "未开启「允许局域网访问」：代理端口通常仅本机可用；如需其他设备/公网访问，请在设置开启 allow-lan，并将 bind-address 设为 0.0.0.0 或本机局域网 IP，再放行端口。";
 
       openModal({
         title: `复制链接 · ${inst.name}`,
@@ -1469,7 +1534,10 @@ async function renderInstances() {
             </div>
           </div>
           <div class="help" style="margin-top:10px">
-            ${escapeHtml(authHint)}；实例端口：<code>${escapeHtml(String(port))}</code>；host：<code>${escapeHtml(String(host))}</code><br/>
+            ${escapeHtml(authHint)}<br/>
+            ${escapeHtml(hostHint)}<br/>
+            ${escapeHtml(lanHint)}<br/>
+            实例端口：<code>${escapeHtml(String(port))}</code>；host：<code>${escapeHtml(String(host))}</code><br/>
             说明：本项目的 <code>mixed-port</code> 同时支持 HTTP 与 SOCKS5，你可以按目标应用的要求选择其一。
           </div>
         `
@@ -1519,12 +1587,13 @@ async function renderInstances() {
 
 async function renderPool() {
   const el = $("#view-pool");
-  const { proxies } = await api("/api/pool");
+  const [{ proxies }, { settings }] = await Promise.all([api("/api/pool"), api("/api/settings")]);
+  const exportHost = String(settings?.exportHost || "").trim();
 
   const runningCount = (proxies || []).filter((p) => p.running).length;
-  const hostPreview = proxies?.length
-    ? String(proxies[0]?.proxy ?? "").slice(0, String(proxies[0]?.proxy ?? "").lastIndexOf(":")) || "-"
-    : "-";
+  const hostPreview =
+    exportHost ||
+    (proxies?.length ? String(proxies[0]?.proxy ?? "").slice(0, String(proxies[0]?.proxy ?? "").lastIndexOf(":")) || "-" : "-");
   const text = (proxies || [])
     .map((p) => `${p.proxy}\t${p.running ? "运行中" : "已停止"}\t${p.name}`)
     .join("\n");
@@ -1566,12 +1635,13 @@ async function renderPool() {
           </div>
           <div class="stat">
             <div class="stat-value">${escapeHtml(hostPreview)}</div>
-            <div class="stat-label">导出 host（可用 <code>PROXY_HOST</code> 覆盖）</div>
+            <div class="stat-label">导出 host（来自「设置」）</div>
           </div>
         </div>
 
         <div class="help" style="margin-top:10px">
-          说明：此处的 host 来自服务端环境变量 <code>PROXY_HOST</code>（默认 <code>127.0.0.1</code>），仅用于导出显示。实例的实际监听由「设置」里的 <code>bind-address</code> / <code>allow-lan</code> 控制。
+          说明：导出列表使用「设置」里的「导出 Host」。首次启动若为空，服务会尝试自动获取公网 IP 并写入；也可以在「设置」里手动填写或点击「自动获取公网 IP」。<br/>
+          提示：实例的实际监听由「设置」里的 <code>bind-address</code> / <code>allow-lan</code> 控制；公网访问还需放行端口（防火墙/安全组/端口映射）。
         </div>
       </div>
     </div>

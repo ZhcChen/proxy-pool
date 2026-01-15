@@ -37,6 +37,7 @@ export type Settings = {
   maxLogLines: number;
   healthCheckIntervalSec: number;
   healthCheckUrl: string;
+  exportHost: string;
   proxyAuth: ProxyAuth;
 };
 

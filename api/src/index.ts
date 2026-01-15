@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
+import { isIP } from "node:net";
+import { networkInterfaces } from "node:os";
 import type { Instance, MihomoProxy, State, Subscription } from "./types";
 import { Storage, generateProxyAuth } from "./storage";
 import { parseSubscriptionYaml } from "./subscription";
@@ -97,6 +99,155 @@ function unauthorized(): Response {
 
 function notFound(): Response {
   return json({ ok: false, error: "not found" }, { status: 404 });
+}
+
+function listHostIps(): { ips: string[]; best: string | null } {
+  const ifaces = networkInterfaces();
+  const ips: string[] = [];
+  for (const list of Object.values(ifaces)) {
+    for (const it of list ?? []) {
+      const addr = (it as any)?.address;
+      const internal = !!(it as any)?.internal;
+      if (!addr || typeof addr !== "string") continue;
+      if (internal) continue;
+      ips.push(addr);
+    }
+  }
+
+  const isPrivateIPv4 = (ip: string): boolean => {
+    const parts = ip.split(".");
+    if (parts.length !== 4) return false;
+    const n = parts.map((p) => Number(p));
+    if (n.some((x) => !Number.isInteger(x) || x < 0 || x > 255)) return false;
+    const [a, b] = n;
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    // CGNAT
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return false;
+  };
+
+  const ipv4 = ips.filter((s) => /^\d+\.\d+\.\d+\.\d+$/.test(s));
+  const privateIpv4 = ipv4.filter(isPrivateIPv4);
+  const best = privateIpv4[0] ?? ipv4[0] ?? ips[0] ?? null;
+
+  return { ips: Array.from(new Set(ips)), best };
+}
+
+function normalizeHostInput(raw: unknown): string | null {
+  let v = typeof raw === "string" ? raw.trim() : "";
+  if (!v) return "";
+
+  // 这里仅支持 host（IP/域名），不允许带 scheme/path
+  if (v.includes("://")) return null;
+  if (/[\/\s]/.test(v)) return null;
+
+  // 允许用户粘贴 [IPv6]，内部存储时去掉 []
+  if (v.startsWith("[") && v.endsWith("]")) v = v.slice(1, -1).trim();
+
+  // 允许 IP（v4/v6）
+  if (isIP(v)) return v;
+
+  // 域名不允许带端口（避免出现 example.com:port）
+  if (v.includes(":")) return null;
+
+  const host = v.toLowerCase();
+  if (host === "localhost") return host;
+  if (host.length > 253) return null;
+
+  const labels = host.split(".");
+  const labelRe = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+  if (!labels.every((l) => labelRe.test(l))) return null;
+
+  return host;
+}
+
+function normalizeIp(raw: string): string | null {
+  const v = String(raw || "").trim();
+  if (!v) return null;
+  // ipv4
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(v)) return v;
+  // ipv6（粗略校验：仅包含 hex/冒号，且至少一个冒号）
+  if (/^[0-9a-fA-F:]+$/.test(v) && v.includes(":")) return v;
+  return null;
+}
+
+async function detectPublicIp(): Promise<string> {
+  // 允许通过环境变量覆写（用于测试或特殊部署场景）
+  const override = normalizeIp(process.env.PUBLIC_IP_OVERRIDE ?? "");
+  if (override) return override;
+
+  const timeoutMs = 2500;
+  const fetchText = async (url: string): Promise<string> => {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    try {
+      const resp = await fetch(url, { signal: ac.signal });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return (await resp.text()).trim();
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  // 多 provider 兜底，避免单点失败
+  const providers: Array<() => Promise<string | null>> = [
+    async () => {
+      const txt = await fetchText("https://api.ipify.org?format=json");
+      try {
+        const obj = JSON.parse(txt) as { ip?: string };
+        return normalizeIp(obj.ip ?? "");
+      } catch {
+        return null;
+      }
+    },
+    async () => normalizeIp(await fetchText("https://checkip.amazonaws.com")),
+    async () => normalizeIp(await fetchText("https://ifconfig.me/ip")),
+    async () => {
+      const txt = await fetchText("https://1.1.1.1/cdn-cgi/trace");
+      const m = txt.match(/(?:^|\n)ip=([^\n]+)\n?/);
+      return normalizeIp(m?.[1] ?? "");
+    }
+  ];
+
+  let lastErr: string | null = null;
+  for (const p of providers) {
+    try {
+      const ip = await p();
+      if (ip) return ip;
+    } catch (e) {
+      lastErr = (e as Error).message;
+    }
+  }
+  throw new Error(lastErr ? `获取公网 IP 失败：${lastErr}` : "获取公网 IP 失败：未解析到合法 IP");
+}
+
+async function bootstrapExportHost(): Promise<void> {
+  const current = String(state.settings.exportHost || "").trim();
+  if (current) return;
+
+  // 优先使用环境变量（适合容器/反代场景）
+  const envHost = normalizeHostInput(process.env.PROXY_HOST ?? "");
+  if (envHost && envHost !== "127.0.0.1" && envHost.toLowerCase() !== "localhost") {
+    state = { ...state, settings: { ...state.settings, exportHost: envHost } };
+    await storage.saveState(state);
+    console.log(`已从环境变量 PROXY_HOST 初始化导出 Host：${envHost}`);
+    return;
+  }
+
+  // 后台自动探测公网 IP（不阻塞启动）；仅在 exportHost 为空时写入
+  detectPublicIp()
+    .then(async (ip) => {
+      const stillEmpty = !String(state.settings.exportHost || "").trim();
+      if (!stillEmpty) return;
+      state = { ...state, settings: { ...state.settings, exportHost: ip } };
+      await storage.saveState(state);
+      console.log(`已自动获取公网 IP 并保存到设置：${ip}`);
+    })
+    .catch((e) => {
+      console.warn(`自动获取公网 IP 失败（可在设置里手动填写导出 Host）：${(e as Error).message}`);
+    });
 }
 
 function withRuntime(i: Instance) {
@@ -380,6 +531,27 @@ async function routeApi(req: Request): Promise<Response> {
 
   if (!isAuthorized(req)) return unauthorized();
 
+  if (req.method === "GET" && path === "/api/system/ips") {
+    return json({ ok: true, ...listHostIps() });
+  }
+
+  if (req.method === "POST" && path === "/api/settings/detect-public-ip") {
+    const body = (await req.json().catch(() => ({}))) as any;
+    const force = !!body?.force;
+    try {
+      const ip = await detectPublicIp();
+      const current = String(state.settings.exportHost || "").trim();
+      const shouldSave = force || !current;
+      if (shouldSave) {
+        state = { ...state, settings: { ...state.settings, exportHost: ip } };
+        await storage.saveState(state);
+      }
+      return json({ ok: true, ip, saved: shouldSave, exportHost: shouldSave ? ip : current });
+    } catch (e) {
+      return badRequest((e as Error).message);
+    }
+  }
+
   if (req.method === "GET" && path === "/api/mihomo/status") {
     return json({ ok: true, status: installer.getStatus() });
   }
@@ -461,6 +633,12 @@ async function routeApi(req: Request): Promise<Response> {
         return badRequest("检测链接只支持 http/https");
       }
       next.healthCheckUrl = v;
+    }
+
+    if (body.exportHost !== undefined) {
+      const v = normalizeHostInput(body.exportHost);
+      if (v === null) return badRequest("导出 Host 格式不正确：只允许填写 IP/域名（不要带 http(s):// 或路径）");
+      next.exportHost = v;
     }
 
     if (body.proxyAuth?.enabled !== undefined) {
@@ -1160,7 +1338,8 @@ async function routeApi(req: Request): Promise<Response> {
   }
 
   if (req.method === "GET" && path === "/api/pool") {
-    const host = (process.env.PROXY_HOST ?? "127.0.0.1").trim();
+    const rawHost = String(state.settings.exportHost || "").trim() || String(process.env.PROXY_HOST ?? "").trim() || "127.0.0.1";
+    const host = rawHost.includes(":") && !rawHost.startsWith("[") ? `[${rawHost}]` : rawHost;
     const list = state.instances.map((i) => ({
       id: i.id,
       name: i.name,
@@ -1185,6 +1364,8 @@ async function routeStatic(req: Request): Promise<Response> {
 
 const hostname = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? "3320");
+
+await bootstrapExportHost();
 
 const server = Bun.serve({
   hostname,
