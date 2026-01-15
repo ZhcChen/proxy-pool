@@ -4,12 +4,12 @@
       <stop offset="0" stop-color="#0b1020" />
       <stop offset="1" stop-color="#0a0e27" />
     </linearGradient>
-    <radialGradient id="glowBlue" cx="0" cy="0" r="1" gradientTransform="translate(150 140) scale(270)">
-      <stop offset="0" stop-color="#3b82f6" stop-opacity="0.55" />
+    <radialGradient id="glowBlue" cx="0" cy="0" r="1" gradientTransform="translate(150 140) scale(290)">
+      <stop offset="0" stop-color="#3b82f6" stop-opacity="0.5" />
       <stop offset="1" stop-color="#3b82f6" stop-opacity="0" />
     </radialGradient>
-    <radialGradient id="glowOrange" cx="0" cy="0" r="1" gradientTransform="translate(390 390) scale(300)">
-      <stop offset="0" stop-color="#f97316" stop-opacity="0.32" />
+    <radialGradient id="glowOrange" cx="0" cy="0" r="1" gradientTransform="translate(395 395) scale(320)">
+      <stop offset="0" stop-color="#f97316" stop-opacity="0.28" />
       <stop offset="1" stop-color="#f97316" stop-opacity="0" />
     </radialGradient>
     <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
@@ -23,20 +23,15 @@
 
   <g filter="url(#shadow)">
     <path
-      d="M168 282 H344"
+      d="M170 338 V182 L256 276 L342 182 V338"
       fill="none"
-      stroke="#60a5fa"
-      stroke-width="36"
+      stroke="#e8ecff"
+      stroke-width="46"
       stroke-linecap="round"
-      opacity="0.95"
+      stroke-linejoin="round"
+      opacity="0.96"
     />
-
-    <g fill="#e8ecff" stroke="#3b82f6" stroke-width="16">
-      <circle cx="168" cy="282" r="46" />
-      <circle cx="256" cy="282" r="58" />
-      <circle cx="344" cy="282" r="46" />
-    </g>
-
-    <circle cx="365" cy="190" r="18" fill="#f97316" opacity="0.95" />
+    <circle cx="368" cy="352" r="24" fill="#f97316" opacity="0.95" />
+    <circle cx="146" cy="168" r="16" fill="#60a5fa" opacity="0.95" />
   </g>
 </svg>
