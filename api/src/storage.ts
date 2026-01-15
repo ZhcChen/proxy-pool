@@ -19,14 +19,12 @@ function generateRandomUsername(): string {
   return result;
 }
 
-/** 生成强密码（24 位，包含大小写字母、数字、特殊字符） */
+/** 生成强密码（24 位，仅包含大小写字母与数字；更适合直接用于代理 URL userinfo） */
 function generateStrongPassword(): string {
   const lower = "abcdefghijklmnopqrstuvwxyz";
   const upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   const digits = "0123456789";
-  // 注意：不包含 ":"，避免与 "username:password" 格式冲突
-  const special = "!@#$%^&*()-_=+[]{}|;,.<>?";
-  const all = lower + upper + digits + special;
+  const all = lower + upper + digits;
   const len = 24;
 
   const randIndex = (mod: number): number => {
@@ -39,8 +37,7 @@ function generateStrongPassword(): string {
   const required = [
     lower[randIndex(lower.length)],
     upper[randIndex(upper.length)],
-    digits[randIndex(digits.length)],
-    special[randIndex(special.length)]
+    digits[randIndex(digits.length)]
   ];
 
   const bytes = new Uint8Array(len - required.length);
