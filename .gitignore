@@ -3,7 +3,6 @@
 
 # 运行时数据
 data/
-.run/
 *.log
 *.pid
 *.pid.lock
@@ -14,13 +13,19 @@ data/
 !.env.example
 
 # 构建产物
-web/dist/
 dist/
 build/
 
 # 测试产物
 coverage.out
 *.coverprofile
+*.test
+*.out
+
+# Go 构建产物
+api/proxy-pool
+api/bin/
+api/.cache/
 
 # 编辑器 / 系统
 .DS_Store

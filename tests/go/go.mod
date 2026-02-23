@@ -1,4 +1,3 @@
-module mihomo-pool/tests
+module proxy-pool/tests
 
 go 1.25
-

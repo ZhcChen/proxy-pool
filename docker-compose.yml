@@ -16,7 +16,6 @@ services:
       # 对外 OpenAPI 访问 Token（选填；用于 /openapi/pool）
       OPENAPI_TOKEN: 91f59948e37ebd0e51d54630f94668e3fd0c5beced19c0114c44a3f7676f85e3
       DATA_DIR: /data
-      WEB_DIR: /app/web/public
       # 用于“首次启动”初始化导出 Host（之后会持久化到 SQLite，并可在「设置」里修改）
       PROXY_HOST: ${PROXY_HOST:-127.0.0.1}
     volumes:

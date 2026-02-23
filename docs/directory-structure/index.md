@@ -1,14 +1,9 @@
 # 目录结构
 
-## workspaces
+当前核心目录如下：
 
-- `api/`：后端服务（Bun 运行时）
-- `web/`：管理页（当前为静态资源目录 `web/public/`，由 `api` 直接托管）
-
-## 数据目录
-
-默认 `data/`：
-
-- `data/state.sqlite`：持久化状态（订阅、实例、设置）
-- `data/subscriptions/*.yaml`：缓存的订阅内容
-- `data/instances/<id>/config.yaml`：每个实例生成的 mihomo 配置
+- `api/`：后端服务（Go + Gin）
+- `api/src/web/public/`：管理页静态资源（编译时 embed 到二进制）
+- `data/`：运行时数据（SQLite、实例配置、订阅 YAML）
+- `docs/`：需求、方案与 OpenAPI 文档
+- `tests/go/`：Go 测试

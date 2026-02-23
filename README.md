@@ -1,104 +1,100 @@
-# mihomo-pool
+# proxy-pool
 
-一个用于**批量启动/停止多个 mihomo 内核实例**的管理器，目标是把机场的多节点变成一个“代理池”：**每个端口对应一个出口 IP（一个节点/一个内核）**。
+`proxy-pool` 用于批量管理 `mihomo` 多实例，实现“一个端口对应一个节点/出口 IP”的代理池。
 
-## 功能
+## 核心能力
 
-- 导入订阅（URL 或直接粘贴 YAML），解析节点列表
-- 为指定节点创建实例：自动分配 `mixed-port` / `external-controller` 端口
-- Web 页面：实例列表、启动/停止、查看日志、导出代理池端口列表
-- 本地持久化：重启管理器后保留订阅与实例定义（是否自动启动可选）
+- 订阅导入：支持 URL / YAML 导入，自动解析 `proxies`
+- 实例管理：单创建、批量创建、启动/停止、日志查看、可用性检测
+- 节点策略：支持 `autoSwitch`（故障自动切换同订阅可用节点）
+- 代理池导出：统一导出 `host:port` 列表
+- 鉴权：
+  - 管理端：`ADMIN_TOKEN`
+  - OpenAPI：`OPENAPI_TOKEN`（独立 token，仅开放 `GET /openapi/pool`）
 
-## 运行
+## 技术栈
 
-1. 安装依赖：
+- 后端：Go 1.25 + Gin
+- 存储：SQLite（`database/sql + modernc.org/sqlite`）
+- 前端：静态页面（内嵌到 Go 二进制）
+- 运行：Docker Compose
 
-```bash
-bun install
-```
+## 启动（统一方式）
 
-2. 启动：
-
-```bash
-bun run dev
-```
-
-默认监听：`http://127.0.0.1:3320`
-
-启动前请先设置管理员 Token（必填）：
+推荐使用快捷脚本（底层仍是 `docker compose`）：
 
 ```bash
-export ADMIN_TOKEN='请替换为你的强随机 token'
+./scripts/dev.sh up
 ```
 
-打开管理页后先登录，再进行订阅/实例管理。
+常用命令：
 
-> 安全提示：当前版本使用 Bearer Token 鉴权，请不要把管理端口直接暴露到公网，并妥善保管 `ADMIN_TOKEN`（以及启用时的 `OPENAPI_TOKEN`）。
+```bash
+./scripts/dev.sh status
+./scripts/dev.sh logs
+./scripts/dev.sh restart
+./scripts/dev.sh down
+```
 
-## Docker 部署（docker compose）
-
-1. 启动：
+也可直接执行：
 
 ```bash
 docker compose up -d --build
 ```
 
-如果你的 Docker 版本较旧，也可以用 `docker-compose` 命令：
+旧版 Docker：
 
 ```bash
 docker-compose up -d --build
 ```
 
-2. 打开管理页：`http://你的服务器IP:3320`
+停止：
 
-说明：
+```bash
+docker compose down
+```
 
-- 数据会持久化到 `./data`（SQLite、订阅 YAML、mihomo 内核等）。
-- `docker-compose.yml` 默认使用 `network_mode: host`（Linux 推荐），避免端口映射/转发链路导致外部无法访问代理端口。
-- `host` 模式会直接占用宿主机端口：管理端口 `3320` 以及你创建的 `mixed-port` 端口范围；请确保防火墙/安全组已放行你需要的端口。
+启动后访问：
 
-## 配置
+- 管理页（HTMX）：`http://127.0.0.1:3320`
+- 登录方式：输入 `ADMIN_TOKEN`
 
-- 在 Web 页面「设置」里点击「一键安装内核」，自动从 GitHub Release 下载并安装适配你系统的 `mihomo`
-- 如需对局域网开放管理页：设置环境变量 `HOST=0.0.0.0` 再启动
+## 环境变量
 
-可用环境变量：
+常用变量（见 `docker-compose.yml`）：
 
-- `HOST`：管理页监听地址（默认 `127.0.0.1`）
-- `PORT`：管理页端口（默认 `3320`）
-- `ADMIN_TOKEN`：管理 API 访问 Token（必填；Web 登录页输入此值）
-- `OPENAPI_TOKEN`：OpenAPI 访问 Token（选填；用于访问对外的实例池列表接口）
-- `DATA_DIR`：数据目录（默认 `./data`）
-- `WEB_DIR`：静态管理页目录（默认 `./web/public`）
-- `PROXY_HOST`：用于“首次启动”初始化「导出 Host」（之后会持久化到 SQLite，并可在「设置」里修改）。若未设置导出 Host，服务会尝试自动获取公网 IP 并写入。
+- `HOST`：监听地址，默认 `0.0.0.0`
+- `PORT`：管理端口，默认 `3320`
+- `DATA_DIR`：数据目录，默认 `/data`
+- `ADMIN_TOKEN`：管理端 token（必填）
+- `OPENAPI_TOKEN`：OpenAPI token（选填，独立于 ADMIN）
+- `PROXY_HOST`：首次初始化导出 Host（后续可在设置页修改）
+- `MIHOMO_REPO`：mihomo release 仓库（默认 `MetaCubeX/mihomo`）
 
-## OpenAPI（实例池只读）
+## OpenAPI
 
-如需对外暴露实例池列表，可额外设置 `OPENAPI_TOKEN`，然后调用：
+仅开放实例池列表：
 
 ```bash
 curl -H "Authorization: Bearer <OPENAPI_TOKEN>" \
   http://127.0.0.1:3320/openapi/pool
 ```
 
-说明：
+文档见：`docs/openapi/index.md`
 
-- `OPENAPI_TOKEN` 与 `ADMIN_TOKEN` 独立，互不通用。
-- 目前仅开放只读接口：`GET /openapi/pool`。
+## 测试
 
-## 使用方式（代理池）
+```bash
+cd tests/go
+TEST_BASE_URL=http://127.0.0.1:3320 \
+TEST_ADMIN_TOKEN=<ADMIN_TOKEN> \
+TEST_OPENAPI_TOKEN=<OPENAPI_TOKEN> \
+go test ./... -v
+```
 
-1. 在「订阅」里添加你的订阅（URL 或粘贴 YAML）
-2. 在「实例」里选择订阅与节点，创建实例（每个实例会分配一个 `mixed-port`）
-3. 在「代理池」里复制 `host:port` 列表，即可把每个端口当作一个独立的出口代理
+## 目录
 
-说明：
-
-- `mixed-port` 同时支持 HTTP 代理与 SOCKS5 代理（同一个端口）
-- 当前仅解析订阅 YAML 中的 `proxies:` 列表；如果你的订阅只提供 `proxy-providers`，需要换成“展开后的配置”或改造解析逻辑
-
-## 目录结构
-
-- `api/`：后端服务（Bun）
-- `web/`：管理页面（静态资源）
-- `data/`：运行时数据（SQLite、实例配置、订阅 YAML 等；默认不纳入 git）
+- `api/`：Go 服务
+- `data/`：运行数据（SQLite、订阅 YAML、实例配置等）
+- `docs/`：需求/方案/OpenAPI 文档
+- `tests/go/`：Go 测试

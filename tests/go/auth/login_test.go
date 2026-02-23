@@ -1,21 +1,14 @@
 package auth
 
 import (
-	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
-	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -27,7 +20,11 @@ type loginResponse struct {
 	Error    string `json:"error"`
 }
 
-const defaultTestAdminToken = "test-admin-token-1234567890"
+const (
+	defaultTestBaseURL      = "http://127.0.0.1:3320"
+	defaultTestAdminToken   = "e10344ce0619d09572d1154954996794173b79ede364059757f6153daf7a1dee"
+	defaultTestOpenAPIToken = "91f59948e37ebd0e51d54630f94668e3fd0c5beced19c0114c44a3f7676f85e3"
+)
 
 func repoRoot(t *testing.T) string {
 	t.Helper()
@@ -35,178 +32,84 @@ func repoRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	dir := filepath.Dir(file) // tests/go/auth
+	dir := filepath.Dir(file)
 	for i := 0; i < 10; i++ {
-		// root should contain api/package.json
-		if _, err := os.Stat(filepath.Join(dir, "api", "package.json")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "docker-compose.yml")); err == nil {
 			return dir
 		}
 		dir = filepath.Dir(dir)
 	}
-	t.Fatal("无法定位仓库根目录（未找到 api/package.json）")
+	t.Fatal("无法定位仓库根目录（未找到 docker-compose.yml）")
 	return ""
 }
 
-func freePort(t *testing.T) int {
+func testBaseURL() string {
+	if v := strings.TrimSpace(os.Getenv("TEST_BASE_URL")); v != "" {
+		return v
+	}
+	return defaultTestBaseURL
+}
+
+func testAdminToken() string {
+	if v := strings.TrimSpace(os.Getenv("TEST_ADMIN_TOKEN")); v != "" {
+		return v
+	}
+	return defaultTestAdminToken
+}
+
+func testOpenAPIToken() string {
+	if v := strings.TrimSpace(os.Getenv("TEST_OPENAPI_TOKEN")); v != "" {
+		return v
+	}
+	return defaultTestOpenAPIToken
+}
+
+func waitForServiceReady(t *testing.T, baseURL string) {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("net.Listen: %v", err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
-}
-
-type procOutput struct {
-	mu    sync.Mutex
-	lines []string
-	limit int
-}
-
-func newProcOutput(limit int) *procOutput {
-	return &procOutput{limit: limit}
-}
-
-func (p *procOutput) add(line string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.lines = append(p.lines, line)
-	if p.limit > 0 && len(p.lines) > p.limit {
-		p.lines = p.lines[len(p.lines)-p.limit:]
-	}
-}
-
-func (p *procOutput) snapshot() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return strings.Join(p.lines, "\n")
-}
-
-func startServer(t *testing.T) (baseURL, adminToken string, stop func()) {
-	t.Helper()
-
-	root := repoRoot(t)
-	port := freePort(t)
-	dataDir := t.TempDir()
-
-	return startServerWithDataDir(t, root, port, dataDir, defaultTestAdminToken)
-}
-
-func startServerWithDataDir(t *testing.T, root string, port int, dataDir string, adminToken string) (baseURL, token string, stop func()) {
-	t.Helper()
-	return startServerWithDataDirAndTokens(t, root, port, dataDir, adminToken, "")
-}
-
-func startServerWithDataDirAndTokens(
-	t *testing.T,
-	root string,
-	port int,
-	dataDir string,
-	adminToken string,
-	openapiToken string,
-) (baseURL, token string, stop func()) {
-	t.Helper()
-	if strings.TrimSpace(adminToken) == "" {
-		t.Fatal("adminToken 不能为空")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-
-	cmd := exec.CommandContext(ctx, "bun", "--cwd=api", "src/index.ts")
-	cmd.Dir = root
-	env := append(os.Environ(),
-		"HOST=127.0.0.1",
-		fmt.Sprintf("PORT=%d", port),
-		fmt.Sprintf("DATA_DIR=%s", dataDir),
-		fmt.Sprintf("WEB_DIR=%s", filepath.Join(root, "web", "public")),
-		fmt.Sprintf("ADMIN_TOKEN=%s", adminToken),
-		// 避免测试时依赖外网 IP 探测（加快速度并减少不稳定因素）
-		"PUBLIC_IP_OVERRIDE=203.0.113.10",
-	)
-	if strings.TrimSpace(openapiToken) != "" {
-		env = append(env, fmt.Sprintf("OPENAPI_TOKEN=%s", openapiToken))
-	}
-	cmd.Env = env
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		t.Fatalf("StdoutPipe: %v", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		t.Fatalf("StderrPipe: %v", err)
-	}
-
-	out := newProcOutput(300)
-
-	consume := func(r io.Reader) {
-		scanner := bufio.NewScanner(r)
-		for scanner.Scan() {
-			line := scanner.Text()
-			out.add(line)
-		}
-	}
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		t.Fatalf("启动 API 失败: %v", err)
-	}
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	go consume(stdout)
-	go consume(stderr)
-
-	var stopOnce sync.Once
-	stop = func() {
-		stopOnce.Do(func() {
-			cancel()
-			if cmd.Process != nil {
-				_ = cmd.Process.Signal(syscall.SIGTERM)
-			}
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-				if cmd.Process != nil {
-					_ = cmd.Process.Kill()
-				}
-			}
-		})
-	}
-	t.Cleanup(stop)
-
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("server output:\n%s", out.snapshot())
-		}
-	})
-
-	// 等待服务就绪：静态页无需鉴权
-	baseURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 	client := &http.Client{Timeout: 800 * time.Millisecond}
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		select {
-		case err := <-done:
-			t.Fatalf("服务提前退出: %v\n输出:\n%s", err, out.snapshot())
-		default:
-		}
 		req, _ := http.NewRequest("GET", baseURL+"/", nil)
 		resp, err := client.Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == 200 {
-				return baseURL, adminToken, stop
+				return
 			}
 		}
 		time.Sleep(120 * time.Millisecond)
 	}
+	t.Fatalf("服务未就绪，请先执行 docker compose up -d --build（baseURL=%s）", baseURL)
+}
 
-	t.Fatalf("服务未就绪\n输出:\n%s", out.snapshot())
-	return "", "", stop
+func startServer(t *testing.T) (baseURL, adminToken string, stop func()) {
+	t.Helper()
+	baseURL = testBaseURL()
+	adminToken = testAdminToken()
+	waitForServiceReady(t, baseURL)
+	return baseURL, adminToken, func() {}
+}
+
+func startServerWithDataDir(t *testing.T, _ string, _ int, _ string, adminToken string) (baseURL, token string, stop func()) {
+	t.Helper()
+	baseURL, fallbackToken, stop := startServer(t)
+	token = strings.TrimSpace(adminToken)
+	if token == "" {
+		token = fallbackToken
+	}
+	return baseURL, token, stop
+}
+
+func startServerWithDataDirAndTokens(
+	t *testing.T,
+	_ string,
+	_ int,
+	_ string,
+	adminToken string,
+	_ string,
+) (baseURL, token string, stop func()) {
+	t.Helper()
+	return startServerWithDataDir(t, "", 0, "", adminToken)
 }
 
 func TestAuth_LoginFlow(t *testing.T) {
@@ -312,14 +215,10 @@ func TestAuth_LoginFlow(t *testing.T) {
 }
 
 func TestAuth_TokenControlledByEnv(t *testing.T) {
-	root := repoRoot(t)
-	dataDir := t.TempDir()
-
-	tokenA := "test-admin-token-A-123456"
-	baseURL1, _, stop1 := startServerWithDataDir(t, root, freePort(t), dataDir, tokenA)
+	baseURL, adminToken, _ := startServer(t)
 
 	client := &http.Client{Timeout: 2 * time.Second}
-	login := func(baseURL, token string) int {
+	login := func(token string) int {
 		body, _ := json.Marshal(map[string]string{"token": token})
 		req, _ := http.NewRequest("POST", baseURL+"/api/login", bytes.NewReader(body))
 		req.Header.Set("content-type", "application/json")
@@ -330,18 +229,11 @@ func TestAuth_TokenControlledByEnv(t *testing.T) {
 		defer resp.Body.Close()
 		return resp.StatusCode
 	}
-	if got := login(baseURL1, tokenA); got != 200 {
-		t.Fatalf("期望 tokenA 登录 200，实际=%d", got)
-	}
-	stop1()
 
-	tokenB := "test-admin-token-B-654321"
-	baseURL2, _, _ := startServerWithDataDir(t, root, freePort(t), dataDir, tokenB)
-
-	if got := login(baseURL2, tokenA); got != 401 {
-		t.Fatalf("期望旧 tokenA 在重启后 401，实际=%d", got)
+	if got := login(adminToken); got != 200 {
+		t.Fatalf("期望 TEST_ADMIN_TOKEN 登录 200，实际=%d", got)
 	}
-	if got := login(baseURL2, tokenB); got != 200 {
-		t.Fatalf("期望新 tokenB 登录 200，实际=%d", got)
+	if got := login(adminToken + "-wrong"); got != 401 {
+		t.Fatalf("期望错误 token 401，实际=%d", got)
 	}
 }

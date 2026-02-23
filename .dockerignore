@@ -2,10 +2,9 @@
 .DS_Store
 node_modules
 **/node_modules
+tests
+docs
 data
-web/dist
 *.log
-.run
-.run/
 .env
 .env.*

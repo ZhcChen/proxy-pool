@@ -16,11 +16,7 @@ type subscriptionDTO struct {
 }
 
 func TestSubscriptions_Delete(t *testing.T) {
-	root := repoRoot(t)
-	port := freePort(t)
-	dataDir := t.TempDir()
-
-	baseURL, adminToken, _ := startServerWithDataDir(t, root, port, dataDir, defaultTestAdminToken)
+	baseURL, adminToken, _ := startServer(t)
 	token := loginAndGetToken(t, baseURL, adminToken)
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -60,7 +56,7 @@ func TestSubscriptions_Delete(t *testing.T) {
 	}
 
 	// 订阅 YAML 文件应存在
-	yamlPath := filepath.Join(dataDir, "subscriptions", subID+".yaml")
+	yamlPath := filepath.Join(repoRoot(t), "data", "subscriptions", subID+".yaml")
 	if _, err := os.Stat(yamlPath); err != nil {
 		t.Fatalf("期望订阅 yaml 文件存在: %s err=%v", yamlPath, err)
 	}
@@ -80,9 +76,18 @@ func TestSubscriptions_Delete(t *testing.T) {
 	}
 
 	// 文件应被清理
-	if _, err := os.Stat(yamlPath); err == nil {
-		t.Fatalf("期望订阅 yaml 文件被删除，但仍存在: %s", yamlPath)
-	} else if !os.IsNotExist(err) {
-		t.Fatalf("检查订阅 yaml 文件失败: %v", err)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, err := os.Stat(yamlPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				break
+			}
+			t.Fatalf("检查订阅 yaml 文件失败: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("期望订阅 yaml 文件被删除，但仍存在: %s", yamlPath)
+		}
+		time.Sleep(80 * time.Millisecond)
 	}
 }

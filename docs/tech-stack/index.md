@@ -1,6 +1,7 @@
 # 技术栈
 
-- 后端：Bun（TypeScript）
-- 管理页：原生 HTML/CSS/JS（先满足可用性，后续可升级为 React/Vite 等）
-- 内核：`mihomo`（外部可执行文件，由本项目拉起多个进程）
-
+- 后端：Go 1.25 + Gin
+- 存储：SQLite（`database/sql + modernc.org/sqlite`）
+- 前端：静态页面（内嵌到 Go 二进制）
+- 启动方式：Docker Compose
+- 测试：Go（优先 Go 1.25）
