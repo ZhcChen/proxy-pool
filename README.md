@@ -25,14 +25,15 @@ bun run dev
 
 默认监听：`http://127.0.0.1:3320`
 
-启动后 API 会在控制台输出一次性登录信息（首次启动生成并持久化）：
+启动前请先设置管理员 Token（必填）：
 
-- 账号：首次启动随机生成
-- 密码：首次启动随机生成（20 位）
+```bash
+export ADMIN_TOKEN='请替换为你的强随机 token'
+```
 
 打开管理页后先登录，再进行订阅/实例管理。
 
-> 安全提示：当前版本使用本地 JWT 登录态（默认 30 天有效期），请不要把管理端口直接暴露到公网。
+> 安全提示：当前版本使用 Bearer Token 鉴权，请不要把管理端口直接暴露到公网，并妥善保管 `ADMIN_TOKEN`（以及启用时的 `OPENAPI_TOKEN`）。
 
 ## Docker 部署（docker compose）
 
@@ -65,9 +66,25 @@ docker-compose up -d --build
 
 - `HOST`：管理页监听地址（默认 `127.0.0.1`）
 - `PORT`：管理页端口（默认 `3320`）
+- `ADMIN_TOKEN`：管理 API 访问 Token（必填；Web 登录页输入此值）
+- `OPENAPI_TOKEN`：OpenAPI 访问 Token（选填；用于访问对外的实例池列表接口）
 - `DATA_DIR`：数据目录（默认 `./data`）
 - `WEB_DIR`：静态管理页目录（默认 `./web/public`）
 - `PROXY_HOST`：用于“首次启动”初始化「导出 Host」（之后会持久化到 SQLite，并可在「设置」里修改）。若未设置导出 Host，服务会尝试自动获取公网 IP 并写入。
+
+## OpenAPI（实例池只读）
+
+如需对外暴露实例池列表，可额外设置 `OPENAPI_TOKEN`，然后调用：
+
+```bash
+curl -H "Authorization: Bearer <OPENAPI_TOKEN>" \
+  http://127.0.0.1:3320/openapi/pool
+```
+
+说明：
+
+- `OPENAPI_TOKEN` 与 `ADMIN_TOKEN` 独立，互不通用。
+- 目前仅开放只读接口：`GET /openapi/pool`。
 
 ## 使用方式（代理池）
 

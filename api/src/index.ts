@@ -3,13 +3,13 @@ import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { isIP } from "node:net";
 import { networkInterfaces } from "node:os";
+import { timingSafeEqual } from "node:crypto";
 import type { Instance, MihomoProxy, State, Subscription } from "./types";
 import { Storage, generateProxyAuth } from "./storage";
 import { parseSubscriptionYaml } from "./subscription";
 import { MihomoManager, type HealthStatus } from "./mihomo";
 import { MihomoInstaller } from "./mihomoInstaller";
 import { findNextFreePortAvoiding, isPortFree, nowIso, resolveUnder } from "./utils";
-import { signJwtHs256, verifyJwtHs256 } from "./jwt";
 
 const REPO_ROOT = join(import.meta.dir, "../..");
 const DATA_DIR = process.env.DATA_DIR ?? join(REPO_ROOT, "data");
@@ -22,7 +22,14 @@ const installer = new MihomoInstaller(DATA_DIR, storage, process.env.MIHOMO_REPO
 let state: State = await storage.loadState();
 
 const AUTH_TOKEN_KEY = "mihomo-pool-token";
-const JWT_TTL_SEC = 30 * 24 * 60 * 60;
+const ADMIN_TOKEN_ENV = "ADMIN_TOKEN";
+const ADMIN_TOKEN = String(process.env[ADMIN_TOKEN_ENV] ?? "").trim();
+const OPENAPI_TOKEN_ENV = "OPENAPI_TOKEN";
+const OPENAPI_TOKEN = String(process.env[OPENAPI_TOKEN_ENV] ?? "").trim();
+
+if (!ADMIN_TOKEN) {
+  throw new Error(`缺少环境变量 ${ADMIN_TOKEN_ENV}，请设置后再启动`);
+}
 
 const PROXY_HEALTH_KEY_PREFIX = "proxy_health:";
 function loadProxyHealth(subscriptionId: string): Record<string, HealthStatus> {
@@ -32,37 +39,12 @@ function saveProxyHealth(subscriptionId: string, value: Record<string, HealthSta
   storage.setJson(`${PROXY_HEALTH_KEY_PREFIX}${subscriptionId}`, value);
 }
 
-const AUTH_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-function randomString(length: number): string {
-  const bytes = new Uint8Array(length);
-  crypto.getRandomValues(bytes);
-  let out = "";
-  for (let i = 0; i < bytes.length; i++) out += AUTH_ALPHABET[bytes[i] % AUTH_ALPHABET.length];
-  return out;
+function isSameToken(input: string, expected: string): boolean {
+  const a = Buffer.from(input);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
-
-type AdminCredentials = { username: string; password: string; createdAt: string };
-function loadOrCreateAdminCredentials(): AdminCredentials {
-  const existing = storage.getJson<AdminCredentials>("admin_credentials");
-  if (existing?.username && typeof existing.username === "string" && existing?.password && typeof existing.password === "string") {
-    return existing;
-  }
-  const created = { username: randomString(12), password: randomString(20), createdAt: nowIso() };
-  storage.setJson("admin_credentials", created);
-  return created;
-}
-
-const ADMIN = loadOrCreateAdminCredentials();
-
-function loadOrCreateJwtSecret(): string {
-  const existing = storage.getKv("jwt_secret");
-  if (existing && typeof existing === "string" && existing.length >= 32) return existing;
-  const created = randomString(64);
-  storage.setKv("jwt_secret", created);
-  return created;
-}
-
-const JWT_SECRET = loadOrCreateJwtSecret();
 
 function getBearerToken(req: Request): string | null {
   const header = req.headers.get("authorization") ?? "";
@@ -73,10 +55,14 @@ function getBearerToken(req: Request): string | null {
 function isAuthorized(req: Request): boolean {
   const token = getBearerToken(req);
   if (!token) return false;
-  const payload = verifyJwtHs256(token, JWT_SECRET);
-  if (!payload) return false;
-  if (payload.sub !== ADMIN.username) return false;
-  return true;
+  return isSameToken(token, ADMIN_TOKEN);
+}
+
+function isOpenApiAuthorized(req: Request): boolean {
+  if (!OPENAPI_TOKEN) return false;
+  const token = getBearerToken(req);
+  if (!token) return false;
+  return isSameToken(token, OPENAPI_TOKEN);
 }
 
 function json(data: unknown, init: ResponseInit = {}): Response {
@@ -510,23 +496,94 @@ function applyHealthSchedule(): void {
   setTimeout(() => autoHealthTick().catch(() => {}), 800);
 }
 
+function withSubscriptionFlag(urlStr: string, flag: string): string | null {
+  try {
+    const u = new URL(urlStr);
+    u.searchParams.set("flag", flag);
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+function tryParseSubscriptionText(text: string): { ok: true; proxies: MihomoProxy[] } | { ok: false; error: Error } {
+  try {
+    return { ok: true, proxies: parseSubscriptionYaml(text).proxies };
+  } catch (e) {
+    return { ok: false, error: e as Error };
+  }
+}
+
+function isWarningOnlySubscription(proxies: MihomoProxy[]): boolean {
+  if (!Array.isArray(proxies) || proxies.length === 0) return false;
+  if (proxies.length > 3) return false;
+
+  const names = proxies.map((p) => (typeof p?.name === "string" ? p.name.trim() : ""));
+  if (names.some((n) => !n)) return false;
+
+  const warningTokens = ["⚠️", "只能看到", "少数线路", "更新教程", "推荐最新软件"];
+  return names.every((name) => warningTokens.some((t) => name.includes(t)));
+}
+
+async function fetchAndParseSubscriptionFromUrl(urlStr: string): Promise<{ yamlText: string; proxies: MihomoProxy[]; effectiveUrl: string }> {
+  const fetchText = async (u: string): Promise<string> => {
+    const resp = await fetch(u);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return await resp.text();
+  };
+
+  const candidates: Array<{ label: string; url: string }> = [];
+  const seen = new Set<string>();
+  const addCandidate = (label: string, u: string | null): void => {
+    if (!u || seen.has(u)) return;
+    seen.add(u);
+    candidates.push({ label, url: u });
+  };
+
+  addCandidate("原始链接", urlStr);
+  addCandidate("flag=clash-meta", withSubscriptionFlag(urlStr, "clash-meta"));
+  addCandidate("flag=meta", withSubscriptionFlag(urlStr, "meta"));
+  addCandidate("flag=clash", withSubscriptionFlag(urlStr, "clash"));
+
+  const errors: string[] = [];
+  for (const c of candidates) {
+    let text: string;
+    try {
+      text = await fetchText(c.url);
+    } catch (e) {
+      errors.push(`${c.label} 拉取失败：${(e as Error).message}`);
+      continue;
+    }
+
+    const parsed = tryParseSubscriptionText(text);
+    if (!parsed.ok) {
+      errors.push(`${c.label} 解析失败：${parsed.error.message}`);
+      continue;
+    }
+
+    if (isWarningOnlySubscription(parsed.proxies)) {
+      errors.push(`${c.label} 仅返回提示节点，继续尝试其它格式`);
+      continue;
+    }
+
+    return { yamlText: text, proxies: parsed.proxies, effectiveUrl: c.url };
+  }
+
+  throw new Error(errors.length ? errors.join("；") : "拉取订阅失败：无法解析订阅内容");
+}
+
 async function routeApi(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
 
   if (req.method === "POST" && path === "/api/login") {
     const body = (await req.json().catch(() => ({}))) as any;
-    const username = typeof body?.username === "string" ? body.username : "";
-    const password = typeof body?.password === "string" ? body.password : "";
-    if (username === ADMIN.username && password === ADMIN.password) {
-      const now = Math.floor(Date.now() / 1000);
-      const token = signJwtHs256(
-        { sub: ADMIN.username, iat: now, exp: now + JWT_TTL_SEC, iss: "mihomo-pool", jti: crypto.randomUUID() },
-        JWT_SECRET
-      );
-      return json({ ok: true, token, tokenKey: AUTH_TOKEN_KEY, expiresInSec: JWT_TTL_SEC });
+    const token = typeof body?.token === "string" ? body.token.trim() : "";
+    if (!token) return badRequest("token 不能为空");
+    if (isSameToken(token, ADMIN_TOKEN)) {
+      return json({ ok: true, token, tokenKey: AUTH_TOKEN_KEY });
     }
-    return json({ ok: false, error: "账号或密码错误" }, { status: 401 });
+    return json({ ok: false, error: "token 无效" }, { status: 401 });
   }
 
   if (!isAuthorized(req)) return unauthorized();
@@ -666,19 +723,22 @@ async function routeApi(req: Request): Promise<Response> {
     if (!urlStr && !rawYaml) return badRequest("url 或 yaml 需要至少提供一个");
 
     let yamlText = rawYaml;
+    let effectiveUrl = urlStr || null;
     let lastError: string | null = null;
+    let proxies: MihomoProxy[] = [];
+
     if (!yamlText && urlStr) {
       try {
-        const resp = await fetch(urlStr);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        yamlText = await resp.text();
+        const pulled = await fetchAndParseSubscriptionFromUrl(urlStr);
+        yamlText = pulled.yamlText;
+        proxies = pulled.proxies;
+        effectiveUrl = pulled.effectiveUrl;
       } catch (e) {
-        lastError = `拉取订阅失败：${(e as Error).message}`;
+        lastError = (e as Error).message;
       }
     }
 
-    let proxies: any[] = [];
-    if (yamlText) {
+    if (yamlText && proxies.length === 0) {
       try {
         proxies = parseSubscriptionYaml(yamlText).proxies;
       } catch (e) {
@@ -691,7 +751,7 @@ async function routeApi(req: Request): Promise<Response> {
     const sub: Subscription = {
       id,
       name,
-      url: urlStr || null,
+      url: effectiveUrl,
       createdAt,
       updatedAt: createdAt,
       lastError,
@@ -708,6 +768,84 @@ async function routeApi(req: Request): Promise<Response> {
     return json({ ok: true, subscription: sub });
   }
 
+  if (req.method === "PUT" && path.startsWith("/api/subscriptions/")) {
+    const parts = path.split("/");
+    // /api/subscriptions/:id
+    if (parts.length === 4) {
+      const id = parts[3];
+      const sub = state.subscriptions.find((s) => s.id === id);
+      if (!sub) return notFound();
+
+      const body = (await req.json().catch(() => ({}))) as any;
+      if (!body || typeof body !== "object") return badRequest("无效 JSON");
+
+      const hasName = body.name !== undefined;
+      const hasUrl = body.url !== undefined;
+      const hasYaml = body.yaml !== undefined;
+      if (!hasName && !hasUrl && !hasYaml) {
+        return badRequest("至少需要提供一个可更新字段（name/url/yaml）");
+      }
+
+      const nextName = hasName ? String(body.name || "").trim() : sub.name;
+      if (!nextName) return badRequest("name 不能为空");
+
+      let nextUrl = sub.url;
+      if (hasUrl) {
+        const v = String(body.url || "").trim();
+        nextUrl = v ? v : null;
+      }
+
+      let nextProxies = sub.proxies;
+      let nextLastError = sub.lastError;
+      let yamlSnapshotToWrite: string | null = null;
+
+      const yamlRaw = hasYaml ? String(body.yaml || "").trim() : "";
+      if (yamlRaw) {
+        try {
+          nextProxies = parseSubscriptionYaml(yamlRaw).proxies;
+          nextLastError = null;
+          yamlSnapshotToWrite = yamlRaw;
+        } catch (e) {
+          return badRequest(`更新失败：${(e as Error).message}`);
+        }
+      } else if (hasUrl) {
+        if (!nextUrl) {
+          return badRequest("url 不能为空（若希望改为手动 YAML，请同时提供 yaml）");
+        }
+        try {
+          const pulled = await fetchAndParseSubscriptionFromUrl(nextUrl);
+          nextUrl = pulled.effectiveUrl;
+          nextProxies = pulled.proxies;
+          nextLastError = null;
+          yamlSnapshotToWrite = pulled.yamlText;
+        } catch (e) {
+          return badRequest(`更新失败：${(e as Error).message}`);
+        }
+      }
+
+      const updated: Subscription = {
+        ...sub,
+        name: nextName,
+        url: nextUrl,
+        updatedAt: nowIso(),
+        lastError: nextLastError,
+        proxies: nextProxies
+      };
+      state = {
+        ...state,
+        subscriptions: state.subscriptions.map((s) => (s.id === id ? updated : s))
+      };
+      await storage.saveState(state);
+
+      if (yamlSnapshotToWrite) {
+        await mkdir(join(DATA_DIR, "subscriptions"), { recursive: true });
+        await Bun.write(join(DATA_DIR, "subscriptions", `${id}.yaml`), yamlSnapshotToWrite);
+      }
+
+      return json({ ok: true, subscription: updated });
+    }
+  }
+
   if (req.method === "POST" && path.startsWith("/api/subscriptions/") && path.endsWith("/refresh")) {
     const id = path.split("/")[3];
     const sub = state.subscriptions.find((s) => s.id === id);
@@ -715,12 +853,14 @@ async function routeApi(req: Request): Promise<Response> {
     if (!sub.url) return badRequest("该订阅没有 url，无法刷新");
 
     try {
-      const resp = await fetch(sub.url);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const yamlText = await resp.text();
-      const proxies = parseSubscriptionYaml(yamlText).proxies;
-
-      const updated: Subscription = { ...sub, updatedAt: nowIso(), lastError: null, proxies };
+      const pulled = await fetchAndParseSubscriptionFromUrl(sub.url);
+      const updated: Subscription = {
+        ...sub,
+        url: pulled.effectiveUrl,
+        updatedAt: nowIso(),
+        lastError: null,
+        proxies: pulled.proxies
+      };
       state = {
         ...state,
         subscriptions: state.subscriptions.map((s) => (s.id === id ? updated : s))
@@ -728,7 +868,7 @@ async function routeApi(req: Request): Promise<Response> {
       await storage.saveState(state);
 
       await mkdir(join(DATA_DIR, "subscriptions"), { recursive: true });
-      await Bun.write(join(DATA_DIR, "subscriptions", `${id}.yaml`), yamlText);
+      await Bun.write(join(DATA_DIR, "subscriptions", `${id}.yaml`), pulled.yamlText);
 
       return json({ ok: true, subscription: updated });
     } catch (e) {
@@ -998,8 +1138,11 @@ async function routeApi(req: Request): Promise<Response> {
       for (const sub of state.subscriptions) {
         const health = loadProxyHealth(sub.id);
         const used = usedBySub.get(sub.id) ?? new Set<string>();
+        const seen = new Set<string>();
         for (const p of sub.proxies) {
           if (!p?.name) continue;
+          if (seen.has(p.name)) continue;
+          seen.add(p.name);
           if (used.has(p.name)) continue;
           const h = health[p.name] ?? null;
           if (!h?.ok) continue;
@@ -1055,8 +1198,14 @@ async function routeApi(req: Request): Promise<Response> {
 
       const health = loadProxyHealth(subscriptionId);
       const used = new Set(state.instances.filter((i) => i.subscriptionId === subscriptionId).map((i) => i.proxyName));
+      const seen = new Set<string>();
       const availableCandidates: Candidate[] = sub.proxies
-        .filter((p) => !used.has(p.name))
+        .filter((p) => {
+          if (!p?.name) return false;
+          if (seen.has(p.name)) return false;
+          seen.add(p.name);
+          return !used.has(p.name);
+        })
         .map((p) => ({ subscriptionId, subscription: sub, name: p.name, proxy: p, health: health[p.name] ?? null }))
         .filter((x) => x.health?.ok)
         .sort((a, b) => {
@@ -1260,6 +1409,10 @@ async function routeApi(req: Request): Promise<Response> {
       proxyName = proxyNameRaw;
     }
 
+    if (state.instances.some((i) => i.subscriptionId === subscriptionId && i.proxyName === proxyName)) {
+      return badRequest("该节点已被某个实例占用，请先删除旧实例或选择其他节点");
+    }
+
     const bindHost = state.settings.bindAddress || "127.0.0.1";
     const reserved = collectReservedPorts();
 
@@ -1363,16 +1516,35 @@ async function routeApi(req: Request): Promise<Response> {
   }
 
   if (req.method === "GET" && path === "/api/pool") {
-    const rawHost = String(state.settings.exportHost || "").trim() || String(process.env.PROXY_HOST ?? "").trim() || "127.0.0.1";
-    const host = rawHost.includes(":") && !rawHost.startsWith("[") ? `[${rawHost}]` : rawHost;
-    const list = state.instances.map((i) => ({
-      id: i.id,
-      name: i.name,
-      mixedPort: i.mixedPort,
-      proxy: `${host}:${i.mixedPort}`,
-      running: mihomo.getRuntimeStatus(i.id).running
-    }));
-    return json({ ok: true, proxies: list });
+    return json({ ok: true, proxies: buildPoolList() });
+  }
+
+  return notFound();
+}
+
+function buildPoolList() {
+  const rawHost = String(state.settings.exportHost || "").trim() || String(process.env.PROXY_HOST ?? "").trim() || "127.0.0.1";
+  const host = rawHost.includes(":") && !rawHost.startsWith("[") ? `[${rawHost}]` : rawHost;
+  return state.instances.map((i) => ({
+    id: i.id,
+    name: i.name,
+    mixedPort: i.mixedPort,
+    proxy: `${host}:${i.mixedPort}`,
+    running: mihomo.getRuntimeStatus(i.id).running
+  }));
+}
+
+async function routeOpenApi(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  const path = url.pathname;
+
+  if (!OPENAPI_TOKEN) {
+    return json({ ok: false, error: `openapi disabled: missing ${OPENAPI_TOKEN_ENV}` }, { status: 503 });
+  }
+  if (!isOpenApiAuthorized(req)) return unauthorized();
+
+  if (req.method === "GET" && path === "/openapi/pool") {
+    return json({ ok: true, proxies: buildPoolList() });
   }
 
   return notFound();
@@ -1398,6 +1570,7 @@ const server = Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
     if (url.pathname.startsWith("/api/")) return await routeApi(req);
+    if (url.pathname.startsWith("/openapi/")) return await routeOpenApi(req);
     return await routeStatic(req);
   }
 });
@@ -1414,9 +1587,12 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 console.log(`mihomo-pool 已启动：http://${hostname}:${port}`);
-console.log("登录信息（首次生成并持久化）：");
-console.log(`账号: ${ADMIN.username}`);
-console.log(`密码: ${ADMIN.password}`);
+console.log(`登录方式：Bearer Token（环境变量 ${ADMIN_TOKEN_ENV}）`);
+if (OPENAPI_TOKEN) {
+  console.log(`OpenAPI 已启用：GET /openapi/pool（Bearer ${OPENAPI_TOKEN_ENV}）`);
+} else {
+  console.log(`OpenAPI 未启用：设置环境变量 ${OPENAPI_TOKEN_ENV} 后可开放实例池列表`);
+}
 
 bootstrapAutoStart();
 applyHealthSchedule();

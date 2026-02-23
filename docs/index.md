@@ -3,6 +3,7 @@
 ## 入门
 
 - [快速开始](getting-started/)
+- [OpenAPI 文档](openapi/)
 - [目录结构](directory-structure/)
 - [技术栈](tech-stack/)
 
@@ -14,4 +15,3 @@
 ## 质量保障
 
 - [testing/](testing/)：测试策略与约定
-

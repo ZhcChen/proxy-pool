@@ -7,7 +7,7 @@
 
 ## 运行
 
-当前已提供登录功能的集成测试：
+当前已提供基于 Token 鉴权的集成测试（含 OpenAPI 独立 Token）：
 
 ```bash
 cd tests/go

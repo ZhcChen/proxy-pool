@@ -13,6 +13,5 @@ go test ./... -v
 
 说明：
 
-- 测试会临时拉起 `bun --cwd=api src/index.ts`，并从服务端输出中解析随机账号/密码完成登录验证
+- 测试会临时拉起 `bun --cwd=api src/index.ts`，并通过环境变量注入 `ADMIN_TOKEN`（及部分用例中的 `OPENAPI_TOKEN`）完成鉴权验证
 - 会使用临时目录作为 `DATA_DIR`，不会污染本地 `data/`
-

@@ -20,8 +20,8 @@ func TestSubscriptions_Delete(t *testing.T) {
 	port := freePort(t)
 	dataDir := t.TempDir()
 
-	baseURL, username, password, _ := startServerWithDataDir(t, root, port, dataDir)
-	token := loginAndGetToken(t, baseURL, username, password)
+	baseURL, adminToken, _ := startServerWithDataDir(t, root, port, dataDir, defaultTestAdminToken)
+	token := loginAndGetToken(t, baseURL, adminToken)
 
 	client := &http.Client{Timeout: 2 * time.Second}
 
@@ -86,4 +86,3 @@ func TestSubscriptions_Delete(t *testing.T) {
 		t.Fatalf("检查订阅 yaml 文件失败: %v", err)
 	}
 }
-

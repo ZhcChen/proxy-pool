@@ -31,12 +31,11 @@ type resetProxyAuthResponse struct {
 	Error string `json:"error"`
 }
 
-func loginAndGetToken(t *testing.T, baseURL, username, password string) string {
+func loginAndGetToken(t *testing.T, baseURL, adminToken string) string {
 	t.Helper()
 	client := &http.Client{Timeout: 2 * time.Second}
 	body, _ := json.Marshal(map[string]string{
-		"username": username,
-		"password": password,
+		"token": adminToken,
 	})
 	req, _ := http.NewRequest("POST", baseURL+"/api/login", bytes.NewReader(body))
 	req.Header.Set("content-type", "application/json")
@@ -60,8 +59,8 @@ func loginAndGetToken(t *testing.T, baseURL, username, password string) string {
 }
 
 func TestSettings_ProxyAuth_ResetAndToggle(t *testing.T) {
-	baseURL, username, password, _ := startServer(t)
-	token := loginAndGetToken(t, baseURL, username, password)
+	baseURL, adminToken, _ := startServer(t)
+	token := loginAndGetToken(t, baseURL, adminToken)
 
 	client := &http.Client{Timeout: 2 * time.Second}
 
@@ -157,4 +156,3 @@ func TestSettings_ProxyAuth_ResetAndToggle(t *testing.T) {
 		t.Fatalf("期望 settings 里 enabled=true，实际=false")
 	}
 }
-

@@ -1,7 +1,7 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-// 登录态：JWT 保存在 localStorage（刷新不掉线，默认 30 天过期）
+// 登录态：Bearer Token 保存在 localStorage（刷新不掉线）
 const TOKEN_STORAGE_KEY = "mihomo-pool-token";
 let currentToken = null;
 try {
@@ -43,6 +43,10 @@ function escapeHtml(value) {
 function closeModal() {
   const modal = $("#modal");
   if (!modal) return;
+  const modalCard = modal.querySelector(".modal-card");
+  if (modalCard) {
+    modalCard.style.width = "";
+  }
   modal.classList.add("hidden");
   document.body.style.overflow = "";
   $("#modalActions").innerHTML = "";
@@ -50,9 +54,13 @@ function closeModal() {
   $("#modalBody").innerHTML = "";
 }
 
-function openModal({ title, bodyHtml, actionsHtml = "" }) {
+function openModal({ title, bodyHtml, actionsHtml = "", modalWidth = "" }) {
   const modal = $("#modal");
   if (!modal) return;
+  const modalCard = modal.querySelector(".modal-card");
+  if (modalCard) {
+    modalCard.style.width = modalWidth || "";
+  }
   $("#modalTitle").textContent = title || "";
   $("#modalActions").innerHTML = actionsHtml;
   $("#modalBody").innerHTML = bodyHtml;
@@ -219,26 +227,22 @@ function renderLogin() {
           <div class="login-logo">mihomo-pool</div>
           <div class="login-tag">多实例代理池管理</div>
         </div>
-        <div class="login-title">管理员登录</div>
+        <div class="login-title">Token 登录</div>
         <div class="login-subtitle">
-          账号/密码会在首次启动时生成并保存（SQLite），请在服务端控制台日志中查看。登录成功后会在浏览器保存 JWT（默认 30 天过期），刷新页面不会退出。
+          请输入服务端环境变量 <code>ADMIN_TOKEN</code> 的值。登录成功后会在浏览器保存该 Token，刷新页面无需重复输入。
         </div>
 
         <div class="login-form">
           <div class="field">
-            <label>账号</label>
-            <input id="loginUser" autocomplete="username" placeholder="从服务端日志复制账号"/>
-          </div>
-          <div class="field">
-            <label>密码（20 位）</label>
+            <label>访问 Token</label>
             <div class="input-with-action">
-              <input id="loginPass" type="password" autocomplete="current-password" placeholder="从服务端日志复制密码"/>
-              <button class="btn ghost sm input-action" id="togglePass" type="button">显示</button>
+              <input id="loginToken" type="password" autocomplete="current-password" placeholder="粘贴 ADMIN_TOKEN"/>
+              <button class="btn ghost sm input-action" id="toggleToken" type="button">显示</button>
             </div>
           </div>
 
           <button class="btn primary login-btn" id="doLogin">登录</button>
-          <div class="login-foot">提示：如果你修改了 <code>DATA_DIR</code>，请确认控制台打印的账号/密码对应同一个数据目录。</div>
+          <div class="login-foot">提示：该 Token 仅保存在当前浏览器的 <code>localStorage</code>。</div>
         </div>
       </div>
     </div>
@@ -247,8 +251,7 @@ function renderLogin() {
   async function doLogin() {
     try {
       const payload = {
-        username: $("#loginUser").value.trim(),
-        password: $("#loginPass").value
+        token: $("#loginToken").value.trim()
       };
       const res = await fetch("/api/login", {
         method: "POST",
@@ -267,16 +270,16 @@ function renderLogin() {
   }
 
   $("#doLogin").addEventListener("click", doLogin);
-  $("#togglePass").addEventListener("click", () => {
-    const input = $("#loginPass");
-    const btn = $("#togglePass");
+  $("#toggleToken").addEventListener("click", () => {
+    const input = $("#loginToken");
+    const btn = $("#toggleToken");
     const next = input.type === "password" ? "text" : "password";
     input.type = next;
     btn.textContent = next === "text" ? "隐藏" : "显示";
     input.focus();
   });
-  $("#loginUser").focus();
-  $("#loginPass").addEventListener("keydown", (e) => {
+  $("#loginToken").focus();
+  $("#loginToken").addEventListener("keydown", (e) => {
     if (e.key === "Enter") doLogin();
   });
 }
@@ -624,7 +627,7 @@ async function renderSubscriptions() {
   const okCount = subscriptions.filter((s) => !s.lastError).length;
   const errCount = subscriptions.length - okCount;
   el.innerHTML = `
-    ${pageHeader("订阅", "导入机场订阅或粘贴 YAML，解析 proxies 列表。", `<button class="btn" id="refreshSubs">刷新</button>`)}
+	    ${pageHeader("订阅", "导入机场订阅或粘贴 YAML，解析 proxies 列表。", `<button class="btn" id="refreshSubs">刷新列表</button>`)}
 
     <div class="grid">
       <div class="panel">
@@ -647,7 +650,7 @@ async function renderSubscriptions() {
           <div>
             <label>订阅 URL（可选）</label>
             <input id="subUrl" placeholder="https://..."/>
-            <div class="help">填写后可在列表里一键刷新订阅。</div>
+            <div class="help">填写后可在列表里一键更新订阅。</div>
           </div>
         </div>
         <div>
@@ -690,7 +693,7 @@ async function renderSubscriptions() {
       <div class="panel-header">
         <div>
           <div class="panel-title">订阅列表</div>
-          <div class="panel-subtitle">URL 订阅支持一键刷新；粘贴 YAML 的订阅只保存快照。</div>
+          <div class="panel-subtitle">URL 订阅支持一键更新订阅；粘贴 YAML 的订阅只保存快照。</div>
         </div>
       </div>
 
@@ -717,7 +720,8 @@ async function renderSubscriptions() {
 	                          <td>
 	                            <div class="btn-group">
 	                              <button class="btn" data-proxies="${escapeHtml(s.id)}">节点</button>
-	                              ${s.url ? `<button class="btn" data-refresh="${escapeHtml(s.id)}">刷新</button>` : ""}
+	                              <button class="btn" data-sub-edit="${escapeHtml(s.id)}">编辑</button>
+	                              ${s.url ? `<button class="btn" data-refresh="${escapeHtml(s.id)}">更新订阅</button>` : ""}
 	                              <button class="btn danger" data-sub-del="${escapeHtml(s.id)}">删除</button>
 	                            </div>
 	                          </td>
@@ -768,11 +772,65 @@ async function renderSubscriptions() {
       const id = btn.dataset.refresh;
       try {
         await api(`/api/subscriptions/${id}/refresh`, { method: "POST", body: "{}" });
-        toast("已刷新");
+        toast("已更新订阅");
         render();
       } catch (e) {
         toast(e.message, false);
       }
+    })
+  );
+
+  $$("[data-sub-edit]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.subEdit;
+      const sub = subscriptions.find((s) => s.id === id);
+      if (!sub) return;
+
+      openFormModal({
+        title: `编辑订阅 · ${sub.name}`,
+        submitText: "保存更新",
+        bodyHtml: `
+          <div class="row">
+            <div>
+              <label>订阅名称</label>
+              <input id="subEditName" value="${escapeHtml(sub.name)}" />
+              <div class="help">仅用于管理页面展示。</div>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>订阅 URL（可选）</label>
+              <input id="subEditUrl" value="${escapeHtml(sub.url || "")}" placeholder="https://..." />
+	              <div class="help">填写后会立即重新拉取并解析节点；若返回非 YAML，会自动尝试补 <code>flag=clash</code>。</div>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>YAML（可选，填写则优先）</label>
+              <textarea id="subEditYaml" placeholder="粘贴 YAML 后会用此内容覆盖节点列表"></textarea>
+              <div class="help">留空则不覆盖 YAML，按 URL 处理（若 URL 未改则仅更新名称）。</div>
+            </div>
+          </div>
+        `,
+        onSubmit: async () => {
+          const name = $("#subEditName").value.trim();
+          const url = $("#subEditUrl").value.trim();
+          const yaml = $("#subEditYaml").value;
+          if (!name) throw new Error("订阅名称不能为空");
+
+          const payload = { name };
+          if (url !== (sub.url || "")) payload.url = url;
+          if (yaml.trim()) payload.yaml = yaml;
+
+          await api(`/api/subscriptions/${id}`, {
+            method: "PUT",
+            body: JSON.stringify(payload)
+          });
+          closeModal();
+          toast("订阅已更新");
+          render();
+        }
+      });
     })
   );
 
@@ -861,10 +919,11 @@ async function renderSubscriptions() {
 	              : `<tr><td colspan="8" class="muted">没有匹配的节点。</td></tr>`;
 	        }
 
-	        openModal({
-	          title,
-	          actionsHtml: `<button class="btn sm" id="checkAllProxies" type="button">检测全部</button><button class="btn sm" id="copyProxyNames" type="button">复制节点名称</button>`,
-	          bodyHtml: `
+		        openModal({
+		          title,
+		          actionsHtml: `<button class="btn sm" id="checkAllProxies" type="button">检测全部</button><button class="btn sm" id="copyProxyNames" type="button">复制节点名称</button>`,
+		          modalWidth: "70%",
+		          bodyHtml: `
 	            <div class="help" style="margin-bottom:10px">说明：支持对单个节点/全部节点进行延迟检测（检测链接在「设置」里可配置）。敏感字段（如密码/UUID）不会在此页展示。</div>
 	            <div class="row" style="margin-bottom:10px">
 	              <div>
@@ -1010,9 +1069,16 @@ async function renderInstances() {
             <div class="help">选择「全部订阅」可把所有订阅的节点当作一个池来使用（创建实例时会自动避开已占用节点）。</div>
           </div>
           <div>
-            <label>选择节点</label>
+            <label>选择节点（单选）</label>
             <select id="instProxy" ${subscriptions.length ? "" : "disabled"}><option value="${AUTO_PROXY}">全部节点（自动选择未占用）</option></select>
-            <div class="help">每个实例绑定一个节点（同一节点只能被一个实例占用）。选择「全部节点」会自动从未占用节点里挑选。</div>
+            <div class="help">用于单个实例创建。选择「全部节点」会自动从未占用节点里挑选。</div>
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>多选节点（一次创建多个实例）</label>
+            <select id="instProxyMulti" class="proxy-multi-select" multiple ${subscriptions.length ? "" : "disabled"}></select>
+            <div class="help">可按 Ctrl/Cmd 或 Shift 多选。若这里有选中项，点击「创建实例」会按所选节点一次性创建多个实例。</div>
           </div>
         </div>
 
@@ -1217,9 +1283,14 @@ async function renderInstances() {
   async function refreshProxyOptions() {
     const subId = $("#instSub").value;
     const sel = $("#instProxy");
+    const multiSel = $("#instProxyMulti");
 
     if (!subscriptions.length) {
       sel.innerHTML = `<option value="">（暂无节点）</option>`;
+      if (multiSel) {
+        multiSel.innerHTML = `<option value="">（暂无节点）</option>`;
+        multiSel.disabled = true;
+      }
       batchBtn.disabled = true;
       setCreateEnabled(false, "提示：暂无订阅，请先去「订阅」添加。");
       await refreshAvailability();
@@ -1232,9 +1303,13 @@ async function renderInstances() {
     const isAll = subId === ALL_SUB;
     const items = [];
     if (isAll) {
+      const seen = new Set();
       for (const s of subscriptions) {
         for (const p of s.proxies || []) {
           if (!p?.name) continue;
+          const key = `${s.id}::${p.name}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
           items.push({ subscriptionId: s.id, subscriptionName: s.name, proxyName: p.name });
         }
       }
@@ -1242,19 +1317,31 @@ async function renderInstances() {
       const sub = subscriptions.find((s) => s.id === subId);
       if (!sub) {
         sel.innerHTML = `<option value="">（无）</option>`;
+        if (multiSel) {
+          multiSel.innerHTML = `<option value="">（无）</option>`;
+          multiSel.disabled = true;
+        }
         batchBtn.disabled = true;
         setCreateEnabled(false, "提示：请选择订阅后再创建实例。");
         await refreshAvailability();
         return;
       }
+      const seen = new Set();
       for (const p of sub.proxies || []) {
         if (!p?.name) continue;
+        const key = `${sub.id}::${p.name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
         items.push({ subscriptionId: sub.id, subscriptionName: sub.name, proxyName: p.name });
       }
     }
 
     if (!items.length) {
       sel.innerHTML = `<option value="">（该订阅没有 proxies）</option>`;
+      if (multiSel) {
+        multiSel.innerHTML = `<option value="">（该订阅没有 proxies）</option>`;
+        multiSel.disabled = true;
+      }
       batchBtn.disabled = true;
       setCreateEnabled(false, "提示：该订阅没有 proxies，请检查订阅内容。");
       await refreshAvailability();
@@ -1287,6 +1374,24 @@ async function renderInstances() {
     ].join("");
 
     sel.innerHTML = optionsHtml;
+    if (multiSel) {
+      const multiOptions = items
+        .filter((it) => !isUsed(it))
+        .map((it) => {
+          const label = isAll ? `${it.subscriptionName} · ${it.proxyName}` : it.proxyName;
+          const value = isAll
+            ? escapeHtml(JSON.stringify({ subscriptionId: it.subscriptionId, proxyName: it.proxyName }))
+            : escapeHtml(it.proxyName);
+          return `<option value="${value}">${escapeHtml(label)}</option>`;
+        });
+      if (multiOptions.length) {
+        multiSel.innerHTML = multiOptions.join("");
+        multiSel.disabled = false;
+      } else {
+        multiSel.innerHTML = `<option value="">（没有可选节点）</option>`;
+        multiSel.disabled = true;
+      }
+    }
 
     batchBtn.disabled = unusedCount <= 0;
     if (unusedCount <= 0) {
@@ -1295,8 +1400,8 @@ async function renderInstances() {
       setCreateEnabled(
         true,
         isAll
-          ? "提示：已选择“全部订阅”，可用「全部节点」让系统自动分配未占用节点。"
-          : "提示：你也可以选择「全部节点」让系统自动分配未占用节点。"
+          ? "提示：已选择“全部订阅”，可用「全部节点」自动分配，也可在「多选节点」中一次创建多个。"
+          : "提示：可用「全部节点」自动分配，也可在「多选节点」中一次创建多个。"
       );
     }
 
@@ -1314,44 +1419,106 @@ async function renderInstances() {
     try {
       const subSel = $("#instSub").value;
       const proxySel = $("#instProxy").value;
+      const multiProxyValues = Array.from($("#instProxyMulti")?.selectedOptions || [])
+        .map((o) => o.value)
+        .filter((v) => v && v.trim());
       if (!subSel) throw new Error("请先选择订阅");
-      if (!proxySel) throw new Error("请先选择节点");
+      const autoStart = $("#instAuto").value === "true";
+      const autoSwitch = $("#instAutoSwitch").value === "true";
+      const requestedPort = $("#instPort").value ? Number($("#instPort").value) : undefined;
 
-      let subscriptionId = subSel;
-      let proxyName = proxySel;
-
-      if (subSel === ALL_SUB) {
-        if (proxySel === AUTO_PROXY) {
-          subscriptionId = "";
+      const parseSelectionValue = (value) => {
+        let subscriptionId = subSel;
+        let proxyName = value;
+        if (subSel === ALL_SUB) {
+          if (value === AUTO_PROXY) {
+            subscriptionId = "";
+            proxyName = AUTO_PROXY;
+          } else {
+            let parsed = null;
+            try {
+              parsed = JSON.parse(value);
+            } catch {
+              parsed = null;
+            }
+            if (!parsed || typeof parsed.subscriptionId !== "string" || typeof parsed.proxyName !== "string") {
+              throw new Error("请选择节点");
+            }
+            subscriptionId = parsed.subscriptionId;
+            proxyName = parsed.proxyName;
+          }
+        } else if (value === AUTO_PROXY) {
           proxyName = AUTO_PROXY;
-        } else {
-          let parsed = null;
-          try {
-            parsed = JSON.parse(proxySel);
-          } catch {
-            parsed = null;
-          }
-          if (!parsed || typeof parsed.subscriptionId !== "string" || typeof parsed.proxyName !== "string") {
-            throw new Error("请选择节点");
-          }
-          subscriptionId = parsed.subscriptionId;
-          proxyName = parsed.proxyName;
         }
-      } else if (proxySel === AUTO_PROXY) {
-        proxyName = AUTO_PROXY;
+        return { subscriptionId, proxyName };
+      };
+
+      if (multiProxyValues.length > 0) {
+        if (requestedPort !== undefined) {
+          throw new Error("多选创建不支持指定 mixed-port，请留空自动分配端口");
+        }
+        const uniqueValues = Array.from(new Set(multiProxyValues));
+        const targets = uniqueValues
+          .map((v) => parseSelectionValue(v))
+          .filter((it) => it.proxyName !== AUTO_PROXY);
+        if (!targets.length) throw new Error("请先选择要创建的节点");
+
+        const dedupTargets = [];
+        const seenKeys = new Set();
+        for (const t of targets) {
+          const key = `${t.subscriptionId}::${t.proxyName}`;
+          if (seenKeys.has(key)) continue;
+          seenKeys.add(key);
+          dedupTargets.push(t);
+        }
+
+        const createdInstances = [];
+        const failed = [];
+        for (const t of dedupTargets) {
+          try {
+            const payload = {
+              subscriptionId: t.subscriptionId,
+              proxyName: t.proxyName,
+              autoStart,
+              autoSwitch
+            };
+            const { instance } = await api("/api/instances", { method: "POST", body: JSON.stringify(payload) });
+            if (instance?.id) createdInstances.push(instance);
+          } catch (e) {
+            failed.push({ target: t, error: e.message || "创建失败" });
+          }
+        }
+
+        if (!createdInstances.length && failed.length) {
+          throw new Error(failed[0].error || "创建失败");
+        }
+
+        if (failed.length) {
+          toast(`已创建 ${createdInstances.length} 个，失败 ${failed.length} 个`, false);
+        } else {
+          toast(`已创建 ${createdInstances.length} 个实例`);
+        }
+        render();
+        if (autoStart && createdInstances.length) {
+          for (const inst of createdInstances) {
+            if (inst?.id) checkInstanceInBackground(inst.id);
+          }
+        }
+        return;
       }
 
+      if (!proxySel) throw new Error("请先选择节点");
+      const single = parseSelectionValue(proxySel);
       const payload = {
-        subscriptionId,
-        proxyName,
-        mixedPort: $("#instPort").value ? Number($("#instPort").value) : undefined,
-        autoStart: $("#instAuto").value === "true",
-        autoSwitch: $("#instAutoSwitch").value === "true"
+        subscriptionId: single.subscriptionId,
+        proxyName: single.proxyName,
+        mixedPort: requestedPort,
+        autoStart,
+        autoSwitch
       };
       const { instance } = await api("/api/instances", { method: "POST", body: JSON.stringify(payload) });
       toast("已创建");
       render();
-      // 如果自动启动了，后台触发检测（不阻塞）
       if (payload.autoStart && instance?.id) {
         checkInstanceInBackground(instance.id);
       }

@@ -1,9 +1,9 @@
 services:
-  mihomo-pool:
+  proxy-pool:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: mihomo-pool
+    container_name: proxy-pool
     restart: unless-stopped
     # Linux 推荐：使用 host 网络，避免端口映射/转发链路导致外部无法访问代理端口
     # 注意：host 模式会直接占用宿主机端口（如 3320、以及你创建的 mixed-port 范围）
@@ -11,6 +11,10 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 3320
+      # 管理页登录 Token（必填）
+      ADMIN_TOKEN: e10344ce0619d09572d1154954996794173b79ede364059757f6153daf7a1dee
+      # 对外 OpenAPI 访问 Token（选填；用于 /openapi/pool）
+      OPENAPI_TOKEN: 91f59948e37ebd0e51d54630f94668e3fd0c5beced19c0114c44a3f7676f85e3
       DATA_DIR: /data
       WEB_DIR: /app/web/public
       # 用于“首次启动”初始化导出 Host（之后会持久化到 SQLite，并可在「设置」里修改）

@@ -15,14 +15,30 @@ bun install
 
 ## 启动
 
+先设置管理员 Token（必填）：
+
+```bash
+export ADMIN_TOKEN='请替换为你的强随机 token'
+```
+
 ```bash
 bun run dev
 ```
 
 默认管理页：`http://127.0.0.1:3320`
 
-首次启动时 API 会在控制台打印随机登录账号/密码（密码 20 位），并持久化到 `data/state.sqlite`；后续重启不会变化。
+管理页登录仅需输入 `ADMIN_TOKEN`；浏览器会把该 Token 保存在 `localStorage`，刷新页面无需重新输入。
 
-登录成功后会返回 JWT（默认 30 天有效期），浏览器会保存登录态，刷新页面无需重新登录。
+如需给外部系统读取实例池列表，可额外设置 `OPENAPI_TOKEN`（独立于 `ADMIN_TOKEN`）：
 
-> 安全提示：当前版本为本地管理工具，请不要把管理端口暴露到公网。
+```bash
+export OPENAPI_TOKEN='请替换为你的 openapi token'
+```
+
+然后通过 Bearer 鉴权调用：
+
+```bash
+curl -H "Authorization: Bearer <OPENAPI_TOKEN>" http://127.0.0.1:3320/openapi/pool
+```
+
+> 安全提示：当前版本为本地管理工具，请不要把管理端口暴露到公网，并妥善保管 `ADMIN_TOKEN`（以及启用时的 `OPENAPI_TOKEN`）。

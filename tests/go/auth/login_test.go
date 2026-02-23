@@ -27,6 +27,8 @@ type loginResponse struct {
 	Error    string `json:"error"`
 }
 
+const defaultTestAdminToken = "test-admin-token-1234567890"
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
@@ -80,31 +82,51 @@ func (p *procOutput) snapshot() string {
 	return strings.Join(p.lines, "\n")
 }
 
-func startServer(t *testing.T) (baseURL, username, password string, stop func()) {
+func startServer(t *testing.T) (baseURL, adminToken string, stop func()) {
 	t.Helper()
 
 	root := repoRoot(t)
 	port := freePort(t)
 	dataDir := t.TempDir()
 
-	return startServerWithDataDir(t, root, port, dataDir)
+	return startServerWithDataDir(t, root, port, dataDir, defaultTestAdminToken)
 }
 
-func startServerWithDataDir(t *testing.T, root string, port int, dataDir string) (baseURL, username, password string, stop func()) {
+func startServerWithDataDir(t *testing.T, root string, port int, dataDir string, adminToken string) (baseURL, token string, stop func()) {
 	t.Helper()
+	return startServerWithDataDirAndTokens(t, root, port, dataDir, adminToken, "")
+}
+
+func startServerWithDataDirAndTokens(
+	t *testing.T,
+	root string,
+	port int,
+	dataDir string,
+	adminToken string,
+	openapiToken string,
+) (baseURL, token string, stop func()) {
+	t.Helper()
+	if strings.TrimSpace(adminToken) == "" {
+		t.Fatal("adminToken 不能为空")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
 	cmd := exec.CommandContext(ctx, "bun", "--cwd=api", "src/index.ts")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(),
+	env := append(os.Environ(),
 		"HOST=127.0.0.1",
 		fmt.Sprintf("PORT=%d", port),
 		fmt.Sprintf("DATA_DIR=%s", dataDir),
 		fmt.Sprintf("WEB_DIR=%s", filepath.Join(root, "web", "public")),
+		fmt.Sprintf("ADMIN_TOKEN=%s", adminToken),
 		// 避免测试时依赖外网 IP 探测（加快速度并减少不稳定因素）
 		"PUBLIC_IP_OVERRIDE=203.0.113.10",
 	)
+	if strings.TrimSpace(openapiToken) != "" {
+		env = append(env, fmt.Sprintf("OPENAPI_TOKEN=%s", openapiToken))
+	}
+	cmd.Env = env
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -119,37 +141,11 @@ func startServerWithDataDir(t *testing.T, root string, port int, dataDir string)
 
 	out := newProcOutput(300)
 
-	var mu sync.Mutex
-	foundCred := make(chan struct{})
-	maybeCloseCred := func() {
-		mu.Lock()
-		defer mu.Unlock()
-		if username != "" && password != "" {
-			select {
-			case <-foundCred:
-			default:
-				close(foundCred)
-			}
-		}
-	}
 	consume := func(r io.Reader) {
 		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
 			line := scanner.Text()
 			out.add(line)
-
-			if strings.HasPrefix(line, "账号:") {
-				mu.Lock()
-				username = strings.TrimSpace(strings.TrimPrefix(line, "账号:"))
-				mu.Unlock()
-				maybeCloseCred()
-			}
-			if strings.HasPrefix(line, "密码:") {
-				mu.Lock()
-				password = strings.TrimSpace(strings.TrimPrefix(line, "密码:"))
-				mu.Unlock()
-				maybeCloseCred()
-			}
 		}
 	}
 
@@ -188,43 +184,33 @@ func startServerWithDataDir(t *testing.T, root string, port int, dataDir string)
 		}
 	})
 
-	// 等待账号/密码输出
-	select {
-	case <-foundCred:
-	case err := <-done:
-		t.Fatalf("服务提前退出: %v\n输出:\n%s", err, out.snapshot())
-	case <-ctx.Done():
-		t.Fatalf("等待登录信息超时\n输出:\n%s", out.snapshot())
-	}
-
 	// 等待服务就绪：静态页无需鉴权
 	baseURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 	client := &http.Client{Timeout: 800 * time.Millisecond}
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			t.Fatalf("服务提前退出: %v\n输出:\n%s", err, out.snapshot())
+		default:
+		}
 		req, _ := http.NewRequest("GET", baseURL+"/", nil)
 		resp, err := client.Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == 200 {
-				return baseURL, username, password, stop
+				return baseURL, adminToken, stop
 			}
 		}
 		time.Sleep(120 * time.Millisecond)
 	}
 
 	t.Fatalf("服务未就绪\n输出:\n%s", out.snapshot())
-	return "", "", "", stop
+	return "", "", stop
 }
 
 func TestAuth_LoginFlow(t *testing.T) {
-	baseURL, username, password, _ := startServer(t)
-	if len(password) != 20 {
-		t.Fatalf("期望密码长度为 20，实际=%d（%q）", len(password), password)
-	}
-	if username == "" {
-		t.Fatal("账号为空")
-	}
+	baseURL, adminToken, _ := startServer(t)
 
 	client := &http.Client{Timeout: 2 * time.Second}
 
@@ -241,11 +227,10 @@ func TestAuth_LoginFlow(t *testing.T) {
 		}
 	}
 
-	// 错误密码登录应失败
+	// 错误 token 登录应失败
 	{
 		body, _ := json.Marshal(map[string]string{
-			"username": username,
-			"password": password + "x",
+			"token": adminToken + "x",
 		})
 		req, _ := http.NewRequest("POST", baseURL+"/api/login", bytes.NewReader(body))
 		req.Header.Set("content-type", "application/json")
@@ -255,16 +240,15 @@ func TestAuth_LoginFlow(t *testing.T) {
 		}
 		_ = resp.Body.Close()
 		if resp.StatusCode != 401 {
-			t.Fatalf("期望错误密码 401，实际=%d", resp.StatusCode)
+			t.Fatalf("期望错误 token 401，实际=%d", resp.StatusCode)
 		}
 	}
 
-	// 正确账号密码登录拿 token
+	// 正确 token 登录拿 token
 	var token string
 	{
 		body, _ := json.Marshal(map[string]string{
-			"username": username,
-			"password": password,
+			"token": adminToken,
 		})
 		req, _ := http.NewRequest("POST", baseURL+"/api/login", bytes.NewReader(body))
 		req.Header.Set("content-type", "application/json")
@@ -283,6 +267,9 @@ func TestAuth_LoginFlow(t *testing.T) {
 		}
 		if !lr.OK || lr.Token == "" {
 			t.Fatalf("登录返回异常: ok=%v token=%q error=%q", lr.OK, lr.Token, lr.Error)
+		}
+		if lr.Token != adminToken {
+			t.Fatalf("期望返回 token 与 ADMIN_TOKEN 一致，got=%q want=%q", lr.Token, adminToken)
 		}
 		token = lr.Token
 	}
@@ -324,19 +311,37 @@ func TestAuth_LoginFlow(t *testing.T) {
 	}
 }
 
-func TestAuth_CredentialsPersist(t *testing.T) {
+func TestAuth_TokenControlledByEnv(t *testing.T) {
 	root := repoRoot(t)
 	dataDir := t.TempDir()
 
-	_, user1, pass1, stop1 := startServerWithDataDir(t, root, freePort(t), dataDir)
+	tokenA := "test-admin-token-A-123456"
+	baseURL1, _, stop1 := startServerWithDataDir(t, root, freePort(t), dataDir, tokenA)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	login := func(baseURL, token string) int {
+		body, _ := json.Marshal(map[string]string{"token": token})
+		req, _ := http.NewRequest("POST", baseURL+"/api/login", bytes.NewReader(body))
+		req.Header.Set("content-type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("POST /api/login: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := login(baseURL1, tokenA); got != 200 {
+		t.Fatalf("期望 tokenA 登录 200，实际=%d", got)
+	}
 	stop1()
 
-	_, user2, pass2, _ := startServerWithDataDir(t, root, freePort(t), dataDir)
+	tokenB := "test-admin-token-B-654321"
+	baseURL2, _, _ := startServerWithDataDir(t, root, freePort(t), dataDir, tokenB)
 
-	if user1 == "" || pass1 == "" {
-		t.Fatalf("首次启动未拿到账号密码：user=%q pass=%q", user1, pass1)
+	if got := login(baseURL2, tokenA); got != 401 {
+		t.Fatalf("期望旧 tokenA 在重启后 401，实际=%d", got)
 	}
-	if user1 != user2 || pass1 != pass2 {
-		t.Fatalf("账号/密码未持久化：first=(%s,%s) second=(%s,%s)", user1, pass1, user2, pass2)
+	if got := login(baseURL2, tokenB); got != 200 {
+		t.Fatalf("期望新 tokenB 登录 200，实际=%d", got)
 	}
 }

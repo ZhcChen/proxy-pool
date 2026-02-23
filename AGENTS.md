@@ -30,3 +30,10 @@ mihomo-pool/
 3. 方案确认 → 再进入编码与自测
 
 > 说明：PRD 与技术方案两处需要用户确认后再继续推进。
+
+## 本地开发与测试启动规范
+
+- 后续**本地开发、联调、测试**统一使用 `docker compose` 启动服务，不再使用 `bun run dev` / `bun src/index.ts` 等本机直启方式。
+- 默认启动命令：`docker compose up -d --build`（或旧版本 `docker-compose up -d --build`）。
+- 停止命令：`docker compose down`（或 `docker-compose down`）。
+- 开发与测试前应先确认容器 `proxy-pool` 处于运行状态，再执行接口验证与测试用例。
