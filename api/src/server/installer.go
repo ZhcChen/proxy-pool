@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -180,6 +181,23 @@ func (m *MihomoInstaller) getStatus() MihomoStatus {
 	}
 }
 
+func (m *MihomoInstaller) getBundledLatest() (MihomoLatest, []byte, string, bool) {
+	sys := m.getSystem()
+	return bundledMihomoAsset(sys.OS, sys.Arch)
+}
+
+func verifySHA256(buf []byte, expected string) error {
+	expected = strings.TrimSpace(strings.ToLower(expected))
+	if expected == "" {
+		return nil
+	}
+	sum := fmt.Sprintf("%x", sha256.Sum256(buf))
+	if sum != expected {
+		return fmt.Errorf("sha256 不匹配，expected=%s actual=%s", expected, sum)
+	}
+	return nil
+}
+
 func (m *MihomoInstaller) fetchLatest(includePrerelease bool) (githubRelease, error) {
 	client := &http.Client{Timeout: 20 * time.Second}
 	headers := map[string]string{
@@ -235,11 +253,17 @@ func (m *MihomoInstaller) fetchLatest(includePrerelease bool) (githubRelease, er
 func (m *MihomoInstaller) getLatestInfo(includePrerelease bool) (MihomoLatest, error) {
 	rel, err := m.fetchLatest(includePrerelease)
 	if err != nil {
+		if latest, _, _, ok := m.getBundledLatest(); ok {
+			return latest, nil
+		}
 		return MihomoLatest{}, err
 	}
 	sys := m.getSystem()
 	asset, err := pickBestAsset(rel.Assets, sys.OS, sys.Arch)
 	if err != nil {
+		if latest, _, _, ok := m.getBundledLatest(); ok {
+			return latest, nil
+		}
 		return MihomoLatest{}, err
 	}
 	return MihomoLatest{Tag: rel.TagName, Prerelease: rel.Prerelease, PublishedAt: rel.PublishedAt, AssetName: asset.Name, DownloadURL: asset.BrowserDownloadURL}, nil
@@ -364,9 +388,21 @@ func (m *MihomoInstaller) installLatest(includePrerelease bool, force bool) (*Mi
 			return installed, nil
 		}
 	}
-	buf, err := m.downloadToBuffer(latest.DownloadURL)
-	if err != nil {
-		return nil, err
+	var buf []byte
+	if strings.HasPrefix(latest.DownloadURL, "embedded://") {
+		_, bundledBuf, expectedSHA256, ok := m.getBundledLatest()
+		if !ok {
+			return nil, fmt.Errorf("当前平台没有内置 mihomo 资源，且无法在线拉取")
+		}
+		if err := verifySHA256(bundledBuf, expectedSHA256); err != nil {
+			return nil, fmt.Errorf("内置 mihomo 资源校验失败：%w", err)
+		}
+		buf = bundledBuf
+	} else {
+		buf, err = m.downloadToBuffer(latest.DownloadURL)
+		if err != nil {
+			return nil, err
+		}
 	}
 	binPath := m.getBinPath()
 	tmpPath := binPath + ".tmp"

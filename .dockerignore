@@ -8,3 +8,6 @@ data
 *.log
 .env
 .env.*
+bin
+api/src/server/assets/mihomo/*.gz
+api/src/server/assets/mihomo/cache

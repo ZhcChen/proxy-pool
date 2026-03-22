@@ -15,6 +15,7 @@ data/
 # 构建产物
 dist/
 build/
+bin/
 
 # 测试产物
 coverage.out
@@ -26,6 +27,8 @@ coverage.out
 api/proxy-pool
 api/bin/
 api/.cache/
+api/src/server/assets/mihomo/*.gz
+api/src/server/assets/mihomo/cache/
 
 # 编辑器 / 系统
 .DS_Store

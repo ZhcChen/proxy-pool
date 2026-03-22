@@ -20,3 +20,6 @@ services:
       PROXY_HOST: ${PROXY_HOST:-127.0.0.1}
     volumes:
       - ./data:/data
+      # 直接挂载本地二进制，避免远端/本地每次重新编译镜像
+      - ./bin/proxy-pool:/usr/local/bin/proxy-pool:ro
+      - ./bin/mihomo:/data/bin/mihomo:ro

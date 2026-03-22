@@ -33,6 +33,7 @@ func defaultState() State {
 			BaseControllerPort:     40001,
 			MaxLogLines:            800,
 			HealthCheckIntervalSec: 60,
+			HealthCheckConcurrency: 2,
 			SubscriptionRefreshMin: 0,
 			HealthCheckURL:         "http://www.gstatic.com/generate_204",
 			ExportHost:             "",
@@ -180,6 +181,9 @@ func normalizeState(st State) State {
 	}
 	if out.Settings.HealthCheckIntervalSec < 0 {
 		out.Settings.HealthCheckIntervalSec = fallback.Settings.HealthCheckIntervalSec
+	}
+	if out.Settings.HealthCheckConcurrency <= 0 {
+		out.Settings.HealthCheckConcurrency = fallback.Settings.HealthCheckConcurrency
 	}
 	if out.Settings.SubscriptionRefreshMin < 0 {
 		out.Settings.SubscriptionRefreshMin = fallback.Settings.SubscriptionRefreshMin

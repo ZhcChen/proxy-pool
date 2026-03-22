@@ -58,6 +58,11 @@ type uiProxyChoice struct {
 	ProxyName        string
 }
 
+type uiSelectOption struct {
+	Value string
+	Label string
+}
+
 type uiMihomoStatusResp struct {
 	OK     bool `json:"ok"`
 	Status struct {
@@ -111,6 +116,14 @@ func uiParseBool(raw string, fallback bool) bool {
 	}
 }
 
+const uiInstancesPageSize = 10
+
+type uiPaginationState struct {
+	CurrentPage int
+	TotalPages  int
+	TotalItems  int
+}
+
 func uiActiveTab(raw string) string {
 	s := strings.TrimSpace(strings.ToLower(raw))
 	switch s {
@@ -118,6 +131,70 @@ func uiActiveTab(raw string) string {
 		return s
 	default:
 		return "instances"
+	}
+}
+
+func uiParsePositiveInt(raw string, fallback int) int {
+	if v, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && v > 0 {
+		return v
+	}
+	return fallback
+}
+
+func uiInstancesPageFromRequest(c *gin.Context) int {
+	if c == nil {
+		return 1
+	}
+	if raw := strings.TrimSpace(c.Query("page")); raw != "" {
+		return uiParsePositiveInt(raw, 1)
+	}
+	if raw := strings.TrimSpace(c.PostForm("page")); raw != "" {
+		return uiParsePositiveInt(raw, 1)
+	}
+	return 1
+}
+
+func uiInstancesTabPath(page int) string {
+	return "/ui/tab/instances?page=" + strconv.Itoa(uiParsePositiveInt(strconv.Itoa(page), 1))
+}
+
+func uiAppendPageParam(base string, page int) string {
+	sep := "?"
+	if strings.Contains(base, "?") {
+		sep = "&"
+	}
+	return base + sep + "page=" + strconv.Itoa(uiParsePositiveInt(strconv.Itoa(page), 1))
+}
+
+func uiPaginateInstances(items []uiInstance, page int) ([]uiInstance, uiPaginationState) {
+	totalItems := len(items)
+	totalPages := totalItems / uiInstancesPageSize
+	if totalItems%uiInstancesPageSize != 0 {
+		totalPages++
+	}
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	currentPage := uiParsePositiveInt(strconv.Itoa(page), 1)
+	if currentPage > totalPages {
+		currentPage = totalPages
+	}
+	start := (currentPage - 1) * uiInstancesPageSize
+	if start > totalItems {
+		start = totalItems
+	}
+	end := start + uiInstancesPageSize
+	if end > totalItems {
+		end = totalItems
+	}
+	pageItems := items[start:end]
+	if pageItems == nil {
+		pageItems = []uiInstance{}
+	}
+	return pageItems, uiPaginationState{
+		CurrentPage: currentPage,
+		TotalPages:  totalPages,
+		TotalItems:  totalItems,
 	}
 }
 
@@ -214,6 +291,74 @@ func uiBuildInstanceProxyURLs(inst uiInstance, settings Settings) (socks5URL, ht
 	socks5URL = fmt.Sprintf("socks5://%s%s:%d", userInfo, hostPart, inst.MixedPort)
 	httpURL = fmt.Sprintf("http://%s%s:%d", userInfo, hostPart, inst.MixedPort)
 	return socks5URL, httpURL, hostHint, authHint
+}
+
+func renderUISelect(name, currentValue string, options []uiSelectOption, autoSubmit bool) string {
+	if len(options) == 0 {
+		return ""
+	}
+
+	selected := options[0]
+	for _, opt := range options {
+		if opt.Value == currentValue {
+			selected = opt
+			break
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(`<div class="ui-select" data-ui-select`)
+	if autoSubmit {
+		b.WriteString(` data-ui-select-submit="true"`)
+	}
+	b.WriteString(`>`)
+	b.WriteString(`<input type="hidden" name="` + h(name) + `" value="` + h(selected.Value) + `" data-ui-select-input />`)
+	b.WriteString(`<button class="ui-select-trigger" type="button" data-ui-select-trigger aria-haspopup="listbox" aria-expanded="false">`)
+	b.WriteString(`<span class="ui-select-trigger-text" data-ui-select-label>` + h(selected.Label) + `</span>`)
+	b.WriteString(`<span class="ui-select-trigger-icon" aria-hidden="true"></span>`)
+	b.WriteString(`</button>`)
+	b.WriteString(`<div class="ui-select-menu" data-ui-select-menu role="listbox">`)
+	for _, opt := range options {
+		selectedAttr := `false`
+		className := "ui-select-option"
+		if opt.Value == selected.Value {
+			selectedAttr = `true`
+			className += " is-selected"
+		}
+		b.WriteString(`<button class="` + className + `" type="button" role="option" aria-selected="` + selectedAttr + `" value="` + h(opt.Value) + `" data-ui-select-option data-value="` + h(opt.Value) + `" data-label="` + h(opt.Label) + `">` + h(opt.Label) + `</button>`)
+	}
+	b.WriteString(`</div></div>`)
+	return b.String()
+}
+
+func uiJSString(text string) string {
+	b, _ := json.Marshal(text)
+	return html.EscapeString(string(b))
+}
+
+func uiNormalizeSubscriptionFilter(subs []Subscription, raw string) string {
+	if isAllSubscriptionValue(raw) {
+		return "__ALL__"
+	}
+	for _, sub := range subs {
+		if sub.ID == raw {
+			return raw
+		}
+	}
+	return "__ALL__"
+}
+
+func uiFilterProxyChoices(choices []uiProxyChoice, subID string) []uiProxyChoice {
+	if isAllSubscriptionValue(subID) {
+		return choices
+	}
+	out := make([]uiProxyChoice, 0, len(choices))
+	for _, ch := range choices {
+		if ch.SubscriptionID == subID {
+			out = append(out, ch)
+		}
+	}
+	return out
 }
 
 func uiErrorMessage(body []byte, status int, fallback string) string {
@@ -383,20 +528,73 @@ func renderFlash(msg string, isErr bool) string {
 	if msg == "" {
 		return ""
 	}
+	toneClass := "toast-success"
+	role := "status"
 	if isErr {
-		return `<div class="badge bad" style="margin: 0 2px 12px 2px">` + h(msg) + `</div>`
+		toneClass = "toast-error"
+		role = "alert"
 	}
-	return `<div class="badge ok" style="margin: 0 2px 12px 2px">` + h(msg) + `</div>`
+	return `<div id="ui-toast-root" hx-swap-oob="afterbegin"><div class="toast ` + toneClass + `" data-toast data-toast-autohide="2600" role="` + role + `"><div class="toast-content"><div class="toast-message">` + h(msg) + `</div></div><button class="btn ghost sm toast-close" type="button" onclick="proxyPoolDismissToast(this)">关闭</button></div></div>`
+}
+
+func uiConfirmTriggerAttrs(title, message string) string {
+	return ` hx-trigger="confirmed" data-confirm-title="` + h(title) + `" data-confirm-message="` + h(message) + `" onclick="proxyPoolConfirmAction(this)"`
+}
+
+func renderUIModal(title, subtitle, actionsHTML, bodyHTML string, wide bool) string {
+	title = strings.TrimSpace(title)
+	subtitle = strings.TrimSpace(subtitle)
+	actionsHTML = strings.TrimSpace(actionsHTML)
+	bodyHTML = strings.TrimSpace(bodyHTML)
+
+	cardClass := "panel modal-card"
+	if wide {
+		cardClass += " modal-wide"
+	}
+
+	var b strings.Builder
+	b.WriteString(`<div class="modal" role="dialog" aria-modal="true" onclick="proxyPoolModalBackdropClose(event)">`)
+	b.WriteString(`<div class="` + cardClass + `" onclick="event.stopPropagation()">`)
+	b.WriteString(`<div class="modal-header"><div>`)
+	b.WriteString(`<div class="modal-title">` + h(title) + `</div>`)
+	if subtitle != "" {
+		b.WriteString(`<div class="panel-subtitle">` + h(subtitle) + `</div>`)
+	}
+	b.WriteString(`</div><div class="modal-actions">`)
+	if actionsHTML != "" {
+		b.WriteString(`<div class="modal-actions-group">` + actionsHTML + `</div>`)
+	}
+	b.WriteString(`<button class="btn sm" type="button" onclick="proxyPoolCloseModal(this)">关闭</button>`)
+	b.WriteString(`</div></div>`)
+	b.WriteString(`<div class="modal-body">` + bodyHTML + `</div>`)
+	b.WriteString(`</div></div>`)
+	return b.String()
+}
+
+func renderSubscriptionProxyHealthStatus(health *HealthStatus) string {
+	if health == nil {
+		return `<span class="badge">未检测</span>`
+	}
+	if health.OK {
+		lat := "-"
+		if health.LatencyMs != nil {
+			lat = strconv.Itoa(int(*health.LatencyMs)) + "ms"
+		}
+		return `<span class="badge ok">可用</span> ` + h(lat)
+	}
+	errText := "检测失败"
+	if health.Error != nil {
+		errText = *health.Error
+	}
+	return `<span class="badge bad">不可用</span> ` + h(errText)
 }
 
 func (a *App) renderUILogin(errMsg string) string {
 	var b strings.Builder
 	b.WriteString(`<div id="htmx-root">`)
+	b.WriteString(renderFlash(errMsg, true))
 	b.WriteString(`<div class="login-shell"><div class="panel login-card">`)
 	b.WriteString(`<div class="login-brand"><div class="login-logo">proxy-pool</div><div class="login-tag">多实例代理池管理（HTMX）</div></div>`)
-	if strings.TrimSpace(errMsg) != "" {
-		b.WriteString(`<div class="badge bad" style="margin-bottom: 10px">` + h(errMsg) + `</div>`)
-	}
 	b.WriteString(`<form hx-post="/ui/login" hx-target="#htmx-root" hx-swap="outerHTML">`)
 	b.WriteString(`<div class="field"><label>访问 Token</label><input name="token" type="password" placeholder="粘贴 ADMIN_TOKEN" autocomplete="current-password" required /></div>`)
 	b.WriteString(`<div class="help" style="margin-bottom: 10px">请输入服务端环境变量 <code>ADMIN_TOKEN</code>。</div>`)
@@ -439,6 +637,7 @@ func (a *App) renderUIShell(activeTab, flash string, flashErr bool) string {
 }
 
 func (a *App) handleHTMXRoot(c *gin.Context) {
+	setNoStore(c)
 	activeTab := uiActiveTab(c.Query("tab"))
 	page := `<!doctype html>
 <html lang="zh-CN">
@@ -449,18 +648,41 @@ func (a *App) handleHTMXRoot(c *gin.Context) {
     <meta name="theme-color" content="#0a0e27" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/favicon.ico" sizes="16x16 32x32" />
-    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="` + h(uiAssetURL("/style.css")) + `" />
   </head>
   <body>
+    <div id="ui-toast-root" class="toast-root" aria-live="polite" aria-atomic="true"></div>
     <div id="htmx-root" hx-get="/ui/page?tab=` + url.QueryEscape(activeTab) + `" hx-trigger="load" hx-swap="outerHTML">加载中...</div>
-    <script src="/vendor/htmx.min.js"></script>
-    <script src="/htmx.js"></script>
+    <script src="` + h(uiAssetURL("/vendor/htmx.min.js")) + `"></script>
+    <script src="` + h(uiAssetURL("/htmx.js")) + `"></script>
   </body>
 </html>`
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(page))
 }
 
+func uiRootLocation(c *gin.Context) string {
+	tab := strings.TrimSpace(c.Query("tab"))
+	if tab == "" {
+		return "/"
+	}
+	return "/?tab=" + url.QueryEscape(uiActiveTab(tab))
+}
+
+func isHTMXRequest(c *gin.Context) bool {
+	return strings.EqualFold(strings.TrimSpace(c.GetHeader("HX-Request")), "true")
+}
+
+func (a *App) handleUIRootRedirect(c *gin.Context) {
+	setNoStore(c)
+	c.Redirect(http.StatusFound, uiRootLocation(c))
+}
+
 func (a *App) handleUIPage(c *gin.Context) {
+	setNoStore(c)
+	if !isHTMXRequest(c) {
+		c.Redirect(http.StatusFound, uiRootLocation(c))
+		return
+	}
 	tab := uiActiveTab(c.Query("tab"))
 	if !a.isAdminAuthorized(c) {
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderUILogin("")))
@@ -470,6 +692,7 @@ func (a *App) handleUIPage(c *gin.Context) {
 }
 
 func (a *App) handleUILogin(c *gin.Context) {
+	setNoStore(c)
 	token := strings.TrimSpace(c.PostForm("token"))
 	if token == "" {
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderUILogin("token 不能为空")))
@@ -484,12 +707,14 @@ func (a *App) handleUILogin(c *gin.Context) {
 }
 
 func (a *App) handleUILogout(c *gin.Context) {
+	setNoStore(c)
 	c.SetCookie(authTokenKey, "", -1, "/", "", false, true)
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderUILogin("已退出登录")))
 }
 
 func (a *App) uiAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		setNoStore(c)
 		if a.isAdminAuthorized(c) {
 			c.Next()
 			return
@@ -505,6 +730,7 @@ func (a *App) registerUIRoutes(r *gin.Engine) {
 	{
 		ui.GET("/tab/subscriptions/proxies/:id", a.handleUITabSubscriptionProxies)
 		ui.GET("/tab/subscriptions/edit/:id", a.handleUITabSubscriptionEdit)
+		ui.GET("/tab/instances/create", a.handleUITabInstancesCreate)
 		ui.GET("/tab/instances/logs/:id", a.handleUITabInstanceLogs)
 		ui.GET("/tab/instances/copy/:id", a.handleUITabInstanceCopy)
 		ui.GET("/tab/:tab", a.handleUITab)
@@ -538,7 +764,7 @@ func (a *App) handleUITab(c *gin.Context) {
 	var htmlOut string
 	switch tab {
 	case "instances":
-		htmlOut = a.renderTabInstances("", false)
+		htmlOut = a.renderTabInstancesPage("", false, uiInstancesPageFromRequest(c))
 	case "subscriptions":
 		htmlOut = a.renderTabSubscriptions("", false)
 	case "settings":
@@ -546,22 +772,35 @@ func (a *App) handleUITab(c *gin.Context) {
 	case "pool":
 		htmlOut = a.renderTabPool("", false)
 	default:
-		htmlOut = a.renderTabInstances("", false)
+		htmlOut = a.renderTabInstancesPage("", false, uiInstancesPageFromRequest(c))
 	}
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(htmlOut))
 }
 
 func (a *App) renderTabInstances(msg string, isErr bool) string {
+	return a.renderTabInstancesPage(msg, isErr, 1)
+}
+
+func (a *App) renderTabInstancesForRequest(c *gin.Context, msg string, isErr bool) string {
+	return a.renderTabInstancesPage(msg, isErr, uiInstancesPageFromRequest(c))
+}
+
+func (a *App) renderTabInstancesPage(msg string, isErr bool, page int) string {
 	subs, subErr := a.fetchSubscriptions()
 	instances, instErr := a.fetchInstances()
+	settings, settingsErr := a.fetchSettings()
 	if subErr != nil {
 		return `<div class="panel"><div class="badge bad">` + h(subErr.Error()) + `</div></div>`
 	}
 	if instErr != nil {
 		return `<div class="panel"><div class="badge bad">` + h(instErr.Error()) + `</div></div>`
 	}
+	if settingsErr != nil {
+		return `<div class="panel"><div class="badge bad">` + h(settingsErr.Error()) + `</div></div>`
+	}
 	choices := uiBuildProxyChoices(subs, instances)
 	availability := a.availabilityFor(nil, true)
+	pagedInstances, pagination := uiPaginateInstances(instances, page)
 	toInt := func(v any) int {
 		switch n := v.(type) {
 		case int:
@@ -589,60 +828,20 @@ func (a *App) renderTabInstances(msg string, isErr bool) string {
 	var b strings.Builder
 	b.WriteString(renderFlash(msg, isErr))
 	b.WriteString(`<div class="panel">`)
-	b.WriteString(`<div class="panel-header"><div><div class="panel-title">创建实例</div><div class="panel-subtitle">支持单个创建、节点多选创建与批量创建。默认 <code>__AUTO__</code> 自动选择可用且未占用节点。</div></div><div class="panel-actions"><button class="btn sm" hx-get="/ui/tab/instances" hx-target="#ui-tab" hx-swap="innerHTML" type="button">刷新列表</button><button class="btn sm" hx-post="/ui/action/instances/check-all" hx-target="#ui-tab" hx-swap="innerHTML" type="button">检测全部实例</button></div></div>`)
-	b.WriteString(`<div class="help" style="margin-bottom:10px">` + h(availLine) + `</div>`)
-	b.WriteString(`<div class="row">`)
-	b.WriteString(`<form hx-post="/ui/action/instances/create" hx-target="#ui-tab" hx-swap="innerHTML" style="width:100%">`)
-	b.WriteString(`<div class="row"><div><label>订阅</label><select name="subscriptionId">`)
-	b.WriteString(`<option value="__ALL__">全部订阅</option>`)
-	for _, s := range subs {
-		b.WriteString(`<option value="` + h(s.ID) + `">` + h(s.Name) + `（` + strconv.Itoa(len(s.Proxies)) + `）</option>`)
-	}
-	b.WriteString(`</select></div>`)
-	b.WriteString(`<div><label>节点名（单个创建）</label><input name="proxyName" value="__AUTO__" placeholder="__AUTO__ 或具体节点名" /></div>`)
-	b.WriteString(`<div><label>mixed-port（可选）</label><input name="mixedPort" type="number" placeholder="留空自动分配" /></div></div>`)
-	b.WriteString(`<div><label>多选节点（可选，选择后将忽略“节点名”并一次创建多个实例）</label>`)
-	b.WriteString(`<select name="proxyTargets" class="proxy-multi-select" multiple`)
+	b.WriteString(`<div class="panel-header"><div><div class="panel-title">实例管理</div><div class="panel-subtitle">按节点多选创建实例；默认创建后直接启动，自动切换默认关闭。</div></div><div class="panel-actions"><button class="btn primary sm" hx-get="` + h(uiAppendPageParam("/ui/tab/instances/create", pagination.CurrentPage)) + `" hx-target="#ui-extra" hx-swap="innerHTML" type="button">创建实例</button><button class="btn sm" hx-get="` + h(uiInstancesTabPath(pagination.CurrentPage)) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button" data-preserve-scroll>刷新列表</button><button class="btn sm" hx-post="` + h(uiAppendPageParam("/ui/action/instances/check-all", pagination.CurrentPage)) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button" data-loading-button data-preserve-scroll><span class="btn-text">检测全部实例</span><span class="btn-spinner" aria-hidden="true"></span><span class="btn-loading-text">检测中...</span></button></div></div>`)
+	b.WriteString(`<div class="help">` + h(availLine) + `</div>`)
 	if len(choices) == 0 {
-		b.WriteString(` disabled`)
+		b.WriteString(`<div class="help">当前没有可创建节点，可先到订阅页检测节点可用性或删除旧实例释放占用节点。</div>`)
 	}
-	b.WriteString(`>`)
-	if len(choices) == 0 {
-		b.WriteString(`<option value="">暂无可用且未占用节点</option>`)
-	} else {
-		for _, ch := range choices {
-			label := ch.SubscriptionName + ` · ` + ch.ProxyName
-			value := uiEncodeProxyChoice(ch.SubscriptionID, ch.ProxyName)
-			b.WriteString(`<option value="` + h(value) + `">` + h(label) + `</option>`)
-		}
-	}
-	b.WriteString(`</select>`)
-	b.WriteString(`<div class="help">多选创建不支持指定 mixed-port，会按配置自动分配端口。</div></div>`)
-	b.WriteString(`<div class="row"><div><label>自动启动</label><select name="autoStart"><option value="true" selected>是</option><option value="false">否</option></select></div>`)
-	b.WriteString(`<div><label>自动切换</label><select name="autoSwitch"><option value="true" selected>开</option><option value="false">关</option></select></div>`)
-	b.WriteString(`<div style="display:flex;align-items:end"><button class="btn primary" type="submit">创建实例（单个或多选）</button></div></div>`)
-	b.WriteString(`</form>`)
-	b.WriteString(`</div>`)
-
-	b.WriteString(`<div class="row" style="margin-top: 10px"><form hx-post="/ui/action/instances/batch" hx-target="#ui-tab" hx-swap="innerHTML" style="width:100%">`)
-	b.WriteString(`<div class="row"><div><label>批量订阅</label><select name="subscriptionId"><option value="__ALL__">全部订阅</option>`)
-	for _, s := range subs {
-		b.WriteString(`<option value="` + h(s.ID) + `">` + h(s.Name) + `</option>`)
-	}
-	b.WriteString(`</select></div>`)
-	b.WriteString(`<div><label>数量</label><input name="count" type="number" min="1" value="5" /></div>`)
-	b.WriteString(`<div><label>自动启动</label><select name="autoStart"><option value="true" selected>是</option><option value="false">否</option></select></div>`)
-	b.WriteString(`<div><label>自动切换</label><select name="autoSwitch"><option value="true" selected>开</option><option value="false">关</option></select></div>`)
-	b.WriteString(`<div style="display:flex;align-items:end"><button class="btn" type="submit">批量创建</button></div></div></form></div>`)
 	b.WriteString(`</div>`)
 
 	b.WriteString(`<div class="panel" style="margin-top: 14px">`)
 	b.WriteString(`<div class="panel-header"><div><div class="panel-title">实例列表</div><div class="panel-subtitle">支持启动、停止、检测、自动切换、复制代理链接与日志查看。</div></div></div>`)
-	b.WriteString(`<div class="table-wrap"><table class="table"><thead><tr><th>名称</th><th>端口</th><th>状态</th><th>可用性</th><th>自动切换</th><th>创建时间</th><th>操作</th></tr></thead><tbody>`)
-	if len(instances) == 0 {
+	b.WriteString(`<div class="table-wrap"><table class="table"><thead><tr><th>名称</th><th>端口</th><th>状态</th><th>可用性</th><th>自动切换</th><th>创建时间</th><th class="instance-actions-col instance-actions-col-compact">操作</th></tr></thead><tbody>`)
+	if len(pagedInstances) == 0 {
 		b.WriteString(`<tr><td colspan="7" class="muted">暂无实例</td></tr>`)
 	}
-	for _, it := range instances {
+	for _, it := range pagedInstances {
 		running := `<span class="badge bad">已停止</span>`
 		if it.Runtime.Running {
 			running = `<span class="badge ok">运行中</span>`
@@ -667,6 +866,7 @@ func (a *App) renderTabInstances(msg string, isErr bool) string {
 		if it.AutoSwitch {
 			autoSwitch = `<span class="badge ok">开</span>`
 		}
+		socks5URL, httpURL, _, _ := uiBuildInstanceProxyURLs(it, settings)
 		b.WriteString(`<tr>`)
 		b.WriteString(`<td>` + h(it.Name) + `<div class="muted" style="font-size:12px">proxy=` + h(it.ProxyName) + `</div></td>`)
 		b.WriteString(`<td>` + strconv.Itoa(it.MixedPort) + `</td>`)
@@ -674,20 +874,33 @@ func (a *App) renderTabInstances(msg string, isErr bool) string {
 		b.WriteString(`<td>` + health + `</td>`)
 		b.WriteString(`<td>` + autoSwitch + `</td>`)
 		b.WriteString(`<td>` + h(uiFmtTime(it.CreatedAt)) + `</td>`)
-		b.WriteString(`<td><div class="btn-group">`)
+		b.WriteString(`<td class="instance-actions-cell instance-actions-cell-compact"><div class="instance-actions instance-actions-compact instance-actions-flow">`)
 		if it.Runtime.Running {
-			b.WriteString(`<button class="btn danger sm" hx-post="/ui/action/instances/stop/` + h(it.ID) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button">停止</button>`)
+			b.WriteString(`<button class="btn danger sm instance-action-btn instance-action-btn-auto" hx-post="` + h(uiAppendPageParam("/ui/action/instances/stop/"+it.ID, pagination.CurrentPage)) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button" data-preserve-scroll>停止</button>`)
 		} else {
-			b.WriteString(`<button class="btn ok sm" hx-post="/ui/action/instances/start/` + h(it.ID) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button">启动</button>`)
+			b.WriteString(`<button class="btn ok sm instance-action-btn instance-action-btn-auto" hx-post="` + h(uiAppendPageParam("/ui/action/instances/start/"+it.ID, pagination.CurrentPage)) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button" data-preserve-scroll>启动</button>`)
 		}
-		b.WriteString(`<button class="btn sm" hx-post="/ui/action/instances/check/` + h(it.ID) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button">检测</button>`)
-		b.WriteString(`<button class="btn sm" hx-post="/ui/action/instances/toggle-auto-switch/` + h(it.ID) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button">切换自动</button>`)
-		b.WriteString(`<button class="btn sm" hx-get="/ui/tab/instances/copy/` + h(it.ID) + `" hx-target="#ui-extra" hx-swap="innerHTML" type="button">复制链接</button>`)
-		b.WriteString(`<button class="btn sm" hx-get="/ui/tab/instances/logs/` + h(it.ID) + `" hx-target="#ui-extra" hx-swap="innerHTML" type="button">日志</button>`)
-		b.WriteString(`<button class="btn danger sm" hx-confirm="确认删除该实例？" hx-post="/ui/action/instances/delete/` + h(it.ID) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button">删除</button>`)
+		b.WriteString(`<button class="btn sm instance-action-btn instance-action-btn-auto" hx-post="` + h(uiAppendPageParam("/ui/action/instances/check/"+it.ID, pagination.CurrentPage)) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button" data-loading-button data-preserve-scroll><span class="btn-text">检测</span><span class="btn-spinner" aria-hidden="true"></span><span class="btn-loading-text">检测中...</span></button>`)
+		b.WriteString(`<button class="btn sm instance-action-btn instance-action-btn-auto" hx-post="` + h(uiAppendPageParam("/ui/action/instances/toggle-auto-switch/"+it.ID, pagination.CurrentPage)) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button" data-preserve-scroll>自动切换</button>`)
+		b.WriteString(`<button class="btn sm instance-action-btn instance-action-btn-auto" type="button" onclick='proxyPoolCopyText(` + uiJSString(socks5URL) + `, ` + uiJSString("SOCKS5 链接已复制") + `)'>复制 SOCKS5</button>`)
+		b.WriteString(`<button class="btn sm instance-action-btn instance-action-btn-auto" type="button" onclick='proxyPoolCopyText(` + uiJSString(httpURL) + `, ` + uiJSString("HTTP 链接已复制") + `)'>复制 HTTP</button>`)
+		b.WriteString(`<button class="btn sm instance-action-btn instance-action-btn-auto" hx-get="/ui/tab/instances/logs/` + h(it.ID) + `" hx-target="#ui-extra" hx-swap="innerHTML" type="button">日志</button>`)
+		b.WriteString(`<button class="btn danger sm instance-action-btn instance-action-btn-auto"` + uiConfirmTriggerAttrs("删除实例", "确认删除该实例？") + ` hx-post="` + h(uiAppendPageParam("/ui/action/instances/delete/"+it.ID, pagination.CurrentPage)) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button" data-preserve-scroll>删除</button>`)
 		b.WriteString(`</div></td></tr>`)
 	}
-	b.WriteString(`</tbody></table></div></div>`)
+	b.WriteString(`</tbody></table></div>`)
+	if pagination.TotalPages > 1 {
+		b.WriteString(`<div class="panel-actions" style="margin-top:12px;justify-content:space-between"><div class="help">第 ` + strconv.Itoa(pagination.CurrentPage) + ` / ` + strconv.Itoa(pagination.TotalPages) + ` 页，共 ` + strconv.Itoa(pagination.TotalItems) + ` 个实例</div><div class="btn-group"><button class="btn sm" hx-get="` + h(uiInstancesTabPath(maxInt(1, pagination.CurrentPage-1))) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button" data-preserve-scroll`)
+		if pagination.CurrentPage <= 1 {
+			b.WriteString(` disabled`)
+		}
+		b.WriteString(`>上一页</button><button class="btn sm" hx-get="` + h(uiInstancesTabPath(minInt(pagination.TotalPages, pagination.CurrentPage+1))) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button" data-preserve-scroll`)
+		if pagination.CurrentPage >= pagination.TotalPages {
+			b.WriteString(` disabled`)
+		}
+		b.WriteString(`>下一页</button></div></div>`)
+	}
+	b.WriteString(`</div>`)
 	b.WriteString(`<div id="ui-extra"></div>`)
 	return b.String()
 }
@@ -701,11 +914,11 @@ func (a *App) renderTabSubscriptions(msg string, isErr bool) string {
 	b.WriteString(renderFlash(msg, isErr))
 	b.WriteString(`<div class="panel">`)
 	b.WriteString(`<div class="panel-header"><div><div class="panel-title">添加订阅</div><div class="panel-subtitle">支持 URL 或 YAML；URL 会自动尝试 flag 兼容参数，并在名称留空时自动识别（如 SKYLUMO）。</div></div></div>`)
-	b.WriteString(`<form hx-post="/ui/action/subscriptions/create" hx-target="#ui-tab" hx-swap="innerHTML">`)
+	b.WriteString(`<form hx-post="/ui/action/subscriptions/create" hx-target="#ui-tab" hx-swap="innerHTML" data-loading-submit>`)
 	b.WriteString(`<div class="row"><div><label>名称（可选）</label><input name="name" placeholder="留空自动识别，例如 SKYLUMO" /></div>`)
 	b.WriteString(`<div><label>URL（可选）</label><input name="url" placeholder="https://..." /></div></div>`)
 	b.WriteString(`<div><label>YAML（可选）</label><textarea name="yaml" placeholder="proxies:\n  - name: ..."></textarea></div>`)
-	b.WriteString(`<div style="margin-top:10px"><button class="btn primary" type="submit">添加订阅</button></div>`)
+	b.WriteString(`<div style="margin-top:10px"><button class="btn primary" type="submit" data-loading-button><span class="btn-text">添加订阅</span><span class="btn-spinner" aria-hidden="true"></span><span class="btn-loading-text">添加中...</span></button></div>`)
 	b.WriteString(`</form></div>`)
 
 	b.WriteString(`<div class="panel" style="margin-top: 14px">`)
@@ -733,9 +946,9 @@ func (a *App) renderTabSubscriptions(msg string, isErr bool) string {
 		b.WriteString(`<button class="btn sm" hx-get="/ui/tab/subscriptions/proxies/` + h(s.ID) + `" hx-target="#ui-extra" hx-swap="innerHTML" type="button">节点</button>`)
 		b.WriteString(`<button class="btn sm" hx-get="/ui/tab/subscriptions/edit/` + h(s.ID) + `" hx-target="#ui-extra" hx-swap="innerHTML" type="button">编辑</button>`)
 		if s.URL != nil && strings.TrimSpace(*s.URL) != "" {
-			b.WriteString(`<button class="btn sm" hx-post="/ui/action/subscriptions/refresh/` + h(s.ID) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button">更新订阅</button>`)
+			b.WriteString(`<button class="btn sm" hx-post="/ui/action/subscriptions/refresh/` + h(s.ID) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button" data-loading-button><span class="btn-text">更新订阅</span><span class="btn-spinner" aria-hidden="true"></span><span class="btn-loading-text">更新中...</span></button>`)
 		}
-		b.WriteString(`<button class="btn danger sm" hx-confirm="确认删除该订阅？" hx-post="/ui/action/subscriptions/delete/` + h(s.ID) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button">删除</button>`)
+		b.WriteString(`<button class="btn danger sm"` + uiConfirmTriggerAttrs("删除订阅", "确认删除该订阅？") + ` hx-post="/ui/action/subscriptions/delete/` + h(s.ID) + `" hx-target="#ui-tab" hx-swap="innerHTML" type="button">删除</button>`)
 		b.WriteString(`</div></td></tr>`)
 	}
 	b.WriteString(`</tbody></table></div></div>`)
@@ -759,25 +972,31 @@ func (a *App) renderTabSettings(msg string, isErr bool) string {
 	b.WriteString(`<div class="panel">`)
 	b.WriteString(`<div class="panel-header"><div><div class="panel-title">设置</div><div class="panel-subtitle">保存后对新创建实例和重启实例生效。</div></div></div>`)
 	b.WriteString(`<form hx-post="/ui/action/settings/save" hx-target="#ui-tab" hx-swap="innerHTML">`)
-	b.WriteString(`<div class="row"><div><label>bindAddress</label><input name="bindAddress" value="` + h(settings.BindAddress) + `" /></div>`)
-	b.WriteString(`<div><label>allowLan</label><select name="allowLan"><option value="false"` + uiSelected(strconv.FormatBool(settings.AllowLan), "false") + `>否</option><option value="true"` + uiSelected(strconv.FormatBool(settings.AllowLan), "true") + `>是</option></select></div>`)
-	b.WriteString(`<div><label>logLevel</label><select name="logLevel">`)
-	for _, lv := range []string{"silent", "error", "warning", "info", "debug"} {
-		b.WriteString(`<option value="` + lv + `"` + uiSelected(settings.LogLevel, lv) + `>` + lv + `</option>`)
+	allowLanOptions := []uiSelectOption{{Value: "false", Label: "否"}, {Value: "true", Label: "是"}}
+	logLevelOptions := []uiSelectOption{
+		{Value: "silent", Label: "silent"},
+		{Value: "error", Label: "error"},
+		{Value: "warning", Label: "warning"},
+		{Value: "info", Label: "info"},
+		{Value: "debug", Label: "debug"},
 	}
-	b.WriteString(`</select></div></div>`)
+	releaseChannelOptions := []uiSelectOption{{Value: "stable", Label: "稳定版"}, {Value: "prerelease", Label: "预发布"}}
+	b.WriteString(`<div class="row"><div><label>bindAddress</label><input name="bindAddress" value="` + h(settings.BindAddress) + `" /></div>`)
+	b.WriteString(`<div><label>allowLan</label>` + renderUISelect("allowLan", strconv.FormatBool(settings.AllowLan), allowLanOptions, false) + `</div>`)
+	b.WriteString(`<div><label>logLevel</label>` + renderUISelect("logLevel", settings.LogLevel, logLevelOptions, false) + `</div></div>`)
 
 	b.WriteString(`<div class="row"><div><label>baseMixedPort</label><input name="baseMixedPort" type="number" value="` + strconv.Itoa(settings.BaseMixedPort) + `" /></div>`)
 	b.WriteString(`<div><label>baseControllerPort</label><input name="baseControllerPort" type="number" value="` + strconv.Itoa(settings.BaseControllerPort) + `" /></div>`)
 	b.WriteString(`<div><label>maxLogLines</label><input name="maxLogLines" type="number" value="` + strconv.Itoa(settings.MaxLogLines) + `" /></div></div>`)
 
 	b.WriteString(`<div class="row"><div><label>healthCheckIntervalSec</label><input name="healthCheckIntervalSec" type="number" min="0" value="` + strconv.Itoa(settings.HealthCheckIntervalSec) + `" /></div>`)
-	b.WriteString(`<div><label>subscriptionRefreshIntervalMin</label><input name="subscriptionRefreshIntervalMin" type="number" min="0" value="` + strconv.Itoa(settings.SubscriptionRefreshMin) + `" /></div>`)
-	b.WriteString(`<div><label>healthCheckUrl</label><input name="healthCheckUrl" value="` + h(settings.HealthCheckURL) + `" /></div></div>`)
+	b.WriteString(`<div><label>healthCheckConcurrency</label><input name="healthCheckConcurrency" type="number" min="1" value="` + strconv.Itoa(settings.HealthCheckConcurrency) + `" /></div>`)
+	b.WriteString(`<div><label>subscriptionRefreshIntervalMin</label><input name="subscriptionRefreshIntervalMin" type="number" min="0" value="` + strconv.Itoa(settings.SubscriptionRefreshMin) + `" /></div></div>`)
+	b.WriteString(`<div class="row"><div><label>healthCheckUrl</label><input name="healthCheckUrl" value="` + h(settings.HealthCheckURL) + `" /></div></div>`)
 	b.WriteString(`<div class="row"><div><label>exportHost</label><input name="exportHost" value="` + h(settings.ExportHost) + `" placeholder="1.2.3.4 或 example.com" /></div></div>`)
-	b.WriteString(`<div class="row"><div><label>内核更新通道</label><select name="releaseChannel"><option value="stable" selected>稳定版</option><option value="prerelease">预发布</option></select><div class="help">“检查最新版本 / 安装更新”会使用该通道。</div></div></div>`)
+	b.WriteString(`<div class="row"><div><label>内核更新通道</label>` + renderUISelect("releaseChannel", "stable", releaseChannelOptions, false) + `<div class="help">“检查最新版本 / 安装更新”会使用该通道。</div></div></div>`)
 
-	b.WriteString(`<div class="row"><div><label>proxyAuth.enabled</label><select name="proxyAuthEnabled"><option value="false"` + uiSelected(strconv.FormatBool(settings.ProxyAuth.Enabled), "false") + `>否</option><option value="true"` + uiSelected(strconv.FormatBool(settings.ProxyAuth.Enabled), "true") + `>是</option></select></div>`)
+	b.WriteString(`<div class="row"><div><label>proxyAuth.enabled</label>` + renderUISelect("proxyAuthEnabled", strconv.FormatBool(settings.ProxyAuth.Enabled), allowLanOptions, false) + `</div>`)
 	b.WriteString(`<div><label>proxyAuth.username</label><input readonly value="` + h(settings.ProxyAuth.Username) + `" /></div>`)
 	b.WriteString(`<div><label>proxyAuth.password</label><input readonly value="` + h(settings.ProxyAuth.Password) + `" /></div></div>`)
 
@@ -821,7 +1040,7 @@ func (a *App) renderTabPool(msg string, isErr bool) string {
 	var b strings.Builder
 	b.WriteString(renderFlash(msg, isErr))
 	b.WriteString(`<div class="panel">`)
-	b.WriteString(`<div class="panel-header"><div><div class="panel-title">代理池</div><div class="panel-subtitle">每行：proxy / 状态 / 名称（Tab 分隔）</div></div><div class="panel-actions"><button class="btn sm" type="button" onclick="proxyPoolCopyText(document.getElementById('pool-export-text').value)">复制列表</button></div></div>`)
+	b.WriteString(`<div class="panel-header"><div><div class="panel-title">代理池</div><div class="panel-subtitle">每行：proxy / 状态 / 名称（Tab 分隔）</div></div><div class="panel-actions"><button class="btn sm" type="button" onclick="proxyPoolCopyText(document.getElementById('pool-export-text').value, '代理池列表已复制')">复制列表</button></div></div>`)
 	b.WriteString(`<textarea id="pool-export-text" readonly>` + h(strings.Join(lines, "\n")) + `</textarea>`)
 	b.WriteString(`</div>`)
 	b.WriteString(`<div class="panel" style="margin-top:14px"><div class="table-wrap"><table class="table"><thead><tr><th>名称</th><th>端口</th><th>地址</th><th>状态</th></tr></thead><tbody>`)
@@ -851,6 +1070,60 @@ func (a *App) handleUITabSubscriptionEdit(c *gin.Context) {
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(htmlOut))
 }
 
+func (a *App) handleUITabInstancesCreate(c *gin.Context) {
+	subs, subErr := a.fetchSubscriptions()
+	instances, instErr := a.fetchInstances()
+	if subErr != nil {
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(`<div class="panel"><div class="badge bad">`+h(subErr.Error())+`</div></div>`))
+		return
+	}
+	if instErr != nil {
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(`<div class="panel"><div class="badge bad">`+h(instErr.Error())+`</div></div>`))
+		return
+	}
+	subID := uiNormalizeSubscriptionFilter(subs, c.Query("subscriptionId"))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderInstanceCreateModal(subs, instances, subID, uiInstancesPageFromRequest(c), "", false)))
+}
+
+func (a *App) renderInstanceCreateModal(subs []Subscription, instances []uiInstance, selectedSubID string, currentPage int, msg string, isErr bool) string {
+	selectedSubID = uiNormalizeSubscriptionFilter(subs, selectedSubID)
+	choices := uiFilterProxyChoices(uiBuildProxyChoices(subs, instances), selectedSubID)
+
+	var body strings.Builder
+	body.WriteString(renderFlash(msg, isErr))
+	subscriptionOptions := []uiSelectOption{{Value: "__ALL__", Label: "全部订阅"}}
+	for _, sub := range subs {
+		subscriptionOptions = append(subscriptionOptions, uiSelectOption{
+			Value: sub.ID,
+			Label: sub.Name + `（` + strconv.Itoa(len(sub.Proxies)) + `）`,
+		})
+	}
+	autoSwitchOptions := []uiSelectOption{{Value: "false", Label: "关"}, {Value: "true", Label: "开"}}
+	body.WriteString(`<form class="instance-filter-form" hx-get="/ui/tab/instances/create" hx-target="#ui-extra" hx-swap="innerHTML">`)
+	body.WriteString(`<input type="hidden" name="page" value="` + strconv.Itoa(currentPage) + `" />`)
+	body.WriteString(`<div class="row"><div><label>过滤订阅</label>` + renderUISelect("subscriptionId", selectedSubID, subscriptionOptions, true) + `</div><div><label>可创建节点</label><div class="help" style="margin-top:0">当前过滤下可创建 ` + strconv.Itoa(len(choices)) + ` 个节点</div></div></div></form>`)
+	body.WriteString(`<div class="divider"></div>`)
+	body.WriteString(`<form hx-post="/ui/action/instances/create" hx-target="#ui-tab" hx-swap="innerHTML" data-loading-submit="#instance-create-submit">`)
+	body.WriteString(`<input type="hidden" name="page" value="` + strconv.Itoa(currentPage) + `" />`)
+	body.WriteString(`<input type="hidden" name="subscriptionId" value="` + h(selectedSubID) + `" />`)
+	body.WriteString(`<div class="row"><div><label>自动切换</label>` + renderUISelect("autoSwitch", "false", autoSwitchOptions, false) + `<div class="help">创建后默认直接启动，无需额外勾选自动启动。</div></div></div>`)
+	body.WriteString(`<div style="margin-top:12px"><label>选择节点</label><div class="instance-proxy-grid">`)
+	if len(choices) == 0 {
+		body.WriteString(`<div class="instance-proxy-empty muted">当前过滤下暂无可创建节点</div>`)
+	} else {
+		for _, ch := range choices {
+			body.WriteString(`<label class="instance-proxy-card"><input type="checkbox" name="proxyTargets" value="` + h(uiEncodeProxyChoice(ch.SubscriptionID, ch.ProxyName)) + `" /><span class="instance-proxy-card-sub">` + h(ch.SubscriptionName) + `</span><span class="instance-proxy-card-title">` + h(ch.ProxyName) + `</span></label>`)
+		}
+	}
+	body.WriteString(`</div></div>`)
+	body.WriteString(`<div class="modal-form-footer"><button id="instance-create-submit" class="btn primary" type="submit" data-loading-button`)
+	if len(choices) == 0 {
+		body.WriteString(` disabled`)
+	}
+	body.WriteString(`><span class="btn-text">创建所选节点</span><span class="btn-spinner" aria-hidden="true"></span><span class="btn-loading-text">创建中...</span></button></div></form>`)
+	return renderUIModal("创建实例", "按所选节点逐个创建实例；支持先按订阅过滤，再多选创建。", "", body.String(), true)
+}
+
 func (a *App) renderSubscriptionProxiesPanel(subID, msg string, isErr bool) string {
 	proxies, err := a.fetchSubscriptionProxies(subID)
 	if err != nil {
@@ -866,13 +1139,10 @@ func (a *App) renderSubscriptionProxiesPanel(subID, msg string, isErr bool) stri
 		}
 	}
 	var b strings.Builder
-	b.WriteString(`<div class="panel" style="margin-top:14px;width:min(70%,1400px);margin-left:auto;margin-right:auto">`)
-	b.WriteString(`<div class="panel-header"><div><div class="panel-title">节点列表</div><div class="panel-subtitle">支持单个或全部检测。</div></div>`)
-	b.WriteString(`<div class="panel-actions"><button class="btn sm" hx-post="/ui/action/subscriptions/check-all/` + h(subID) + `" hx-target="#ui-extra" hx-swap="innerHTML" type="button">检测全部</button><button class="btn sm" type="button" onclick="proxyPoolCopyText(document.getElementById('` + h(copyTextID) + `').value)">复制节点名称</button></div></div>`)
 	b.WriteString(renderFlash(msg, isErr))
 	b.WriteString(`<div class="row"><div><label>搜索节点</label><input id="` + h(filterID) + `" placeholder="输入关键字筛选节点" oninput="proxyPoolFilterTableRows('` + h(tableID) + `', this.value)" /></div></div>`)
 	b.WriteString(`<textarea id="` + h(copyTextID) + `" class="hidden" readonly>` + h(strings.Join(proxyNames, "\n")) + `</textarea>`)
-	b.WriteString(`<div class="table-wrap"><table class="table" id="` + h(tableID) + `"><thead><tr><th>名称</th><th>类型</th><th>地址</th><th>可用性</th><th>操作</th></tr></thead><tbody>`)
+	b.WriteString(`<div class="table-wrap"><table class="table" id="` + h(tableID) + `"><thead><tr><th>名称</th><th>类型</th><th>地址</th><th>可用性</th><th class="subscription-proxy-actions-col subscription-proxy-actions-col-wide">操作</th></tr></thead><tbody>`)
 	if len(proxies) == 0 {
 		b.WriteString(`<tr><td colspan="5" class="muted">暂无节点</td></tr>`)
 	}
@@ -894,26 +1164,12 @@ func (a *App) renderSubscriptionProxiesPanel(subID, msg string, isErr bool) stri
 				addr = p.Server
 			}
 		}
-		health := `<span class="badge">未检测</span>`
-		if p.Health != nil {
-			if p.Health.OK {
-				lat := "-"
-				if p.Health.LatencyMs != nil {
-					lat = strconv.Itoa(int(*p.Health.LatencyMs)) + "ms"
-				}
-				health = `<span class="badge ok">可用</span> ` + h(lat)
-			} else {
-				errText := "检测失败"
-				if p.Health.Error != nil {
-					errText = *p.Health.Error
-				}
-				health = `<span class="badge bad">不可用</span> ` + h(errText)
-			}
-		}
-		b.WriteString(`<tr data-proxy-name="` + h(strings.ToLower(strings.TrimSpace(p.Name))) + `"><td>` + h(p.Name) + `</td><td>` + h(p.Type) + `</td><td>` + h(addr) + `</td><td>` + health + `</td><td><button class="btn sm" hx-post="/ui/action/subscriptions/check/` + h(subID) + `?name=` + url.QueryEscape(p.Name) + `" hx-target="#ui-extra" hx-swap="innerHTML" type="button">检测</button></td></tr>`)
+		health := renderSubscriptionProxyHealthStatus(p.Health)
+		b.WriteString(`<tr data-proxy-name="` + h(strings.ToLower(strings.TrimSpace(p.Name))) + `" data-subscription-proxy-name="` + h(p.Name) + `"><td>` + h(p.Name) + `</td><td>` + h(p.Type) + `</td><td>` + h(addr) + `</td><td class="subscription-proxy-health-cell" data-subscription-proxy-health="` + h(p.Name) + `">` + health + `</td><td class="subscription-proxy-actions-cell subscription-proxy-actions-cell-wide"><button class="btn sm subscription-proxy-check-btn" hx-post="/ui/action/subscriptions/check/` + h(subID) + `?name=` + url.QueryEscape(p.Name) + `" hx-target="#ui-extra" hx-swap="innerHTML" type="button" data-loading-button data-preserve-scroll data-subscription-proxy-name="` + h(p.Name) + `" data-subscription-proxy-check-url="/api/subscriptions/` + h(subID) + `/proxies/check"><span class="btn-text">检测</span><span class="btn-spinner" aria-hidden="true"></span><span class="btn-loading-text">检测中...</span></button></td></tr>`)
 	}
-	b.WriteString(`</tbody></table></div></div>`)
-	return b.String()
+	b.WriteString(`</tbody></table></div>`)
+	actions := `<button class="btn sm" type="button" data-loading-button data-preserve-scroll data-subscription-bulk-check="true" data-subscription-id="` + h(subID) + `" data-subscription-proxy-check-url="/api/subscriptions/` + h(subID) + `/proxies/check" onclick="return proxyPoolRunSubscriptionBulkCheck(this)"><span class="btn-text">检测全部</span><span class="btn-spinner" aria-hidden="true"></span><span class="btn-loading-text">检测中...</span></button><button class="btn sm" type="button" onclick="proxyPoolCopyText(document.getElementById('` + h(copyTextID) + `').value, '节点名称已复制')">复制节点名称</button>`
+	return renderUIModal("节点列表", "支持单个或全部检测。", actions, b.String(), true)
 }
 
 func (a *App) renderSubscriptionEditPanel(subID, msg string, isErr bool) string {
@@ -935,18 +1191,16 @@ func (a *App) renderSubscriptionEditPanel(subID, msg string, isErr bool) string 
 	if sub.URL != nil {
 		urlVal = *sub.URL
 	}
-	var b strings.Builder
-	b.WriteString(`<div class="panel" style="margin-top:14px">`)
-	b.WriteString(`<div class="panel-header"><div><div class="panel-title">编辑订阅</div><div class="panel-subtitle">可修改名称、URL，或用 YAML 覆盖节点列表。</div></div></div>`)
-	b.WriteString(renderFlash(msg, isErr))
-	b.WriteString(`<form hx-post="/ui/action/subscriptions/update/` + h(sub.ID) + `" hx-target="#ui-tab" hx-swap="innerHTML">`)
-	b.WriteString(`<div class="row"><div><label>名称</label><input name="name" value="` + h(sub.Name) + `" required /></div></div>`)
-	b.WriteString(`<div class="row"><div><label>URL（可选）</label><input name="url" value="` + h(urlVal) + `" placeholder="https://..." /></div></div>`)
-	b.WriteString(`<div><label>YAML（可选，填写则优先）</label><textarea name="yaml" placeholder="留空则按 URL 处理，填写则覆盖节点"></textarea></div>`)
-	b.WriteString(`<div class="help" style="margin-top:8px">若 URL 返回非 Clash YAML，服务会自动尝试追加 <code>flag</code> 参数进行兼容拉取。</div>`)
-	b.WriteString(`<div style="margin-top:10px"><button class="btn primary" type="submit">保存更新</button></div>`)
-	b.WriteString(`</form></div>`)
-	return b.String()
+	var body strings.Builder
+	body.WriteString(renderFlash(msg, isErr))
+	body.WriteString(`<form hx-post="/ui/action/subscriptions/update/` + h(sub.ID) + `" hx-target="#ui-tab" hx-swap="innerHTML" data-loading-submit>`)
+	body.WriteString(`<div class="row"><div><label>名称</label><input name="name" value="` + h(sub.Name) + `" required /></div></div>`)
+	body.WriteString(`<div class="row"><div><label>URL（可选）</label><input name="url" value="` + h(urlVal) + `" placeholder="https://..." /></div></div>`)
+	body.WriteString(`<div><label>YAML（可选，填写则优先）</label><textarea name="yaml" placeholder="留空则按 URL 处理，填写则覆盖节点"></textarea></div>`)
+	body.WriteString(`<div class="help" style="margin-top:8px">若 URL 返回非 Clash YAML，服务会自动尝试追加 <code>flag</code> 参数进行兼容拉取。</div>`)
+	body.WriteString(`<div class="modal-form-footer"><button class="btn primary" type="submit" data-loading-button><span class="btn-text">保存更新</span><span class="btn-spinner" aria-hidden="true"></span><span class="btn-loading-text">保存中...</span></button></div>`)
+	body.WriteString(`</form>`)
+	return renderUIModal("编辑订阅", "可修改名称、URL，或用 YAML 覆盖节点列表。", "", body.String(), false)
 }
 
 func (a *App) handleUITabInstanceLogs(c *gin.Context) {
@@ -973,7 +1227,7 @@ func (a *App) handleUITabInstanceLogs(c *gin.Context) {
 	}
 	text := strings.Join(out.Lines, "\n")
 	copyID := "inst-log-copy-" + strings.ReplaceAll(id, "-", "")
-	htmlOut := `<div class="panel" style="margin-top:14px"><div class="panel-header"><div><div class="panel-title">实例日志</div><div class="panel-subtitle">最近日志（内存缓存）</div></div><div class="panel-actions"><button class="btn sm" type="button" onclick="proxyPoolCopyText(document.getElementById('` + h(copyID) + `').value)">复制日志</button></div></div><textarea id="` + h(copyID) + `" readonly>` + h(text) + `</textarea></div>`
+	htmlOut := `<div class="panel" style="margin-top:14px"><div class="panel-header"><div><div class="panel-title">实例日志</div><div class="panel-subtitle">最近日志（内存缓存）</div></div><div class="panel-actions"><button class="btn sm" type="button" onclick="proxyPoolCopyText(document.getElementById('` + h(copyID) + `').value, '实例日志已复制')">复制日志</button></div></div><textarea id="` + h(copyID) + `" readonly>` + h(text) + `</textarea></div>`
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(htmlOut))
 }
 
@@ -1005,7 +1259,7 @@ func (a *App) handleUITabInstanceCopy(c *gin.Context) {
 	httpID := "inst-http-" + strings.ReplaceAll(id, "-", "")
 	var b strings.Builder
 	b.WriteString(`<div class="panel" style="margin-top:14px">`)
-	b.WriteString(`<div class="panel-header"><div><div class="panel-title">复制链接</div><div class="panel-subtitle">实例：` + h(target.Name) + `（mixed-port=` + strconv.Itoa(target.MixedPort) + `）</div></div><div class="panel-actions"><button class="btn sm" type="button" onclick="proxyPoolCopyText(document.getElementById('` + h(socksID) + `').value)">复制 SOCKS5</button><button class="btn sm" type="button" onclick="proxyPoolCopyText(document.getElementById('` + h(httpID) + `').value)">复制 HTTP</button></div></div>`)
+	b.WriteString(`<div class="panel-header"><div><div class="panel-title">复制链接</div><div class="panel-subtitle">实例：` + h(target.Name) + `（mixed-port=` + strconv.Itoa(target.MixedPort) + `）</div></div><div class="panel-actions"><button class="btn sm" type="button" onclick="proxyPoolCopyText(document.getElementById('` + h(socksID) + `').value, 'SOCKS5 链接已复制')">复制 SOCKS5</button><button class="btn sm" type="button" onclick="proxyPoolCopyText(document.getElementById('` + h(httpID) + `').value, 'HTTP 链接已复制')">复制 HTTP</button></div></div>`)
 	b.WriteString(`<div class="row"><div><label>SOCKS5</label><input id="` + h(socksID) + `" readonly value="` + h(socks5URL) + `" /></div><div><label>HTTP</label><input id="` + h(httpID) + `" readonly value="` + h(httpURL) + `" /></div></div>`)
 	b.WriteString(`<div class="help" style="margin-top:10px">` + h(authHint) + `<br/>` + h(hostHint) + `<br/>说明：本项目 mixed-port 同时支持 HTTP 与 SOCKS5。</div>`)
 	b.WriteString(`</div>`)
@@ -1091,7 +1345,7 @@ func (a *App) handleUIActionSubscriptionsCheckAll(c *gin.Context) {
 		return
 	}
 	if status >= 200 && status < 300 {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderSubscriptionProxiesPanel(subID, "全部检测完成", false)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderSubscriptionProxiesPanel(subID, "", false)))
 		return
 	}
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderSubscriptionProxiesPanel(subID, uiErrorMessage(body, status, "检测失败"), true)))
@@ -1107,20 +1361,13 @@ func (a *App) handleUIActionSubscriptionsCheckOne(c *gin.Context) {
 		return
 	}
 	if status >= 200 && status < 300 {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderSubscriptionProxiesPanel(subID, "节点检测完成："+name, false)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderSubscriptionProxiesPanel(subID, "", false)))
 		return
 	}
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderSubscriptionProxiesPanel(subID, uiErrorMessage(body, status, "检测失败"), true)))
 }
 
 func (a *App) handleUIActionInstancesCreate(c *gin.Context) {
-	subID := strings.TrimSpace(c.PostForm("subscriptionId"))
-	if subID == "" {
-		subID = "__ALL__"
-	}
-	autoStart := uiParseBool(c.PostForm("autoStart"), true)
-	autoSwitch := uiParseBool(c.PostForm("autoSwitch"), true)
-	mixedPortRaw := strings.TrimSpace(c.PostForm("mixedPort"))
 	targetValues := c.PostFormArray("proxyTargets")
 	targetSet := map[string]struct{}{}
 	targets := make([]struct {
@@ -1133,7 +1380,7 @@ func (a *App) handleUIActionInstancesCreate(c *gin.Context) {
 		}
 		subscriptionID, proxyName, err := uiDecodeProxyChoice(raw)
 		if err != nil {
-			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(err.Error(), true)))
+			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, err.Error(), true)))
 			return
 		}
 		key := subscriptionID + "\x00" + proxyName
@@ -1150,82 +1397,55 @@ func (a *App) handleUIActionInstancesCreate(c *gin.Context) {
 		})
 	}
 
-	if len(targets) > 0 {
-		if mixedPortRaw != "" {
-			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances("多选创建不支持指定 mixed-port，请留空自动分配", true)))
-			return
-		}
-		created := 0
-		failed := 0
-		firstErr := ""
-		for _, t := range targets {
-			payload := map[string]any{
-				"subscriptionId": t.SubscriptionID,
-				"proxyName":      t.ProxyName,
-				"autoStart":      autoStart,
-				"autoSwitch":     autoSwitch,
-			}
-			status, body, err := a.callAdminAPI(http.MethodPost, "/api/instances", payload)
-			if err != nil {
-				failed++
-				if firstErr == "" {
-					firstErr = err.Error()
-				}
-				continue
-			}
-			if status >= 200 && status < 300 {
-				created++
-				continue
-			}
-			failed++
-			if firstErr == "" {
-				firstErr = uiErrorMessage(body, status, "创建实例失败")
-			}
-		}
-		if created == 0 {
-			if firstErr == "" {
-				firstErr = "多选创建失败"
-			}
-			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(firstErr, true)))
-			return
-		}
-		if failed > 0 {
-			msg := fmt.Sprintf("已创建 %d 个，失败 %d 个", created, failed)
-			if strings.TrimSpace(firstErr) != "" {
-				msg += "（首个错误：" + firstErr + "）"
-			}
-			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(msg, true)))
-			return
-		}
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(fmt.Sprintf("已创建 %d 个实例", created), false)))
+	if len(targets) == 0 {
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, "请至少选择一个节点", true)))
 		return
 	}
 
-	proxyName := strings.TrimSpace(c.PostForm("proxyName"))
-	if proxyName == "" {
-		proxyName = "__AUTO__"
-	}
-	payload := map[string]any{
-		"subscriptionId": subID,
-		"proxyName":      proxyName,
-		"autoStart":      autoStart,
-		"autoSwitch":     autoSwitch,
-	}
-	if mixedPortRaw != "" {
-		if n, err := strconv.Atoi(mixedPortRaw); err == nil && n > 0 {
-			payload["mixedPort"] = n
+	autoSwitch := uiParseBool(c.PostForm("autoSwitch"), false)
+	created := 0
+	failed := 0
+	firstErr := ""
+	for _, t := range targets {
+		payload := map[string]any{
+			"subscriptionId": t.SubscriptionID,
+			"proxyName":      t.ProxyName,
+			"autoStart":      true,
+			"autoSwitch":     autoSwitch,
+		}
+		status, body, err := a.callAdminAPI(http.MethodPost, "/api/instances", payload)
+		if err != nil {
+			failed++
+			if firstErr == "" {
+				firstErr = err.Error()
+			}
+			continue
+		}
+		if status >= 200 && status < 300 {
+			created++
+			continue
+		}
+		failed++
+		if firstErr == "" {
+			firstErr = uiErrorMessage(body, status, "创建实例失败")
 		}
 	}
-	status, body, err := a.callAdminAPI(http.MethodPost, "/api/instances", payload)
-	if err != nil {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(err.Error(), true)))
+	if created == 0 {
+		if firstErr == "" {
+			firstErr = "创建实例失败"
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, firstErr, true)))
 		return
 	}
-	if status >= 200 && status < 300 {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances("实例创建成功", false)))
+	if failed > 0 {
+		msg := fmt.Sprintf("已创建 %d 个，失败 %d 个", created, failed)
+		if strings.TrimSpace(firstErr) != "" {
+			msg += "（首个错误：" + firstErr + "）"
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, msg, true)))
 		return
 	}
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(uiErrorMessage(body, status, "创建实例失败"), true)))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, fmt.Sprintf("已创建 %d 个实例", created), false)))
 }
 
 func (a *App) handleUIActionInstancesBatch(c *gin.Context) {
@@ -1245,90 +1465,90 @@ func (a *App) handleUIActionInstancesBatch(c *gin.Context) {
 	}
 	status, body, err := a.callAdminAPI(http.MethodPost, "/api/instances/batch", payload)
 	if err != nil {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(err.Error(), true)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, err.Error(), true)))
 		return
 	}
 	if status >= 200 && status < 300 {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances("批量创建完成", false)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, "批量创建完成", false)))
 		return
 	}
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(uiErrorMessage(body, status, "批量创建失败"), true)))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, uiErrorMessage(body, status, "批量创建失败"), true)))
 }
 
 func (a *App) handleUIActionInstancesStart(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	status, body, err := a.callAdminAPI(http.MethodPost, "/api/instances/"+id+"/start", map[string]any{})
 	if err != nil {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(err.Error(), true)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, err.Error(), true)))
 		return
 	}
 	if status >= 200 && status < 300 {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances("实例已启动", false)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, "实例已启动", false)))
 		return
 	}
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(uiErrorMessage(body, status, "启动失败"), true)))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, uiErrorMessage(body, status, "启动失败"), true)))
 }
 
 func (a *App) handleUIActionInstancesStop(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	status, body, err := a.callAdminAPI(http.MethodPost, "/api/instances/"+id+"/stop", map[string]any{})
 	if err != nil {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(err.Error(), true)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, err.Error(), true)))
 		return
 	}
 	if status >= 200 && status < 300 {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances("实例已停止", false)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, "实例已停止", false)))
 		return
 	}
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(uiErrorMessage(body, status, "停止失败"), true)))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, uiErrorMessage(body, status, "停止失败"), true)))
 }
 
 func (a *App) handleUIActionInstancesCheck(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	status, body, err := a.callAdminAPI(http.MethodPost, "/api/instances/"+id+"/check", map[string]any{})
 	if err != nil {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(err.Error(), true)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, err.Error(), true)))
 		return
 	}
 	if status >= 200 && status < 300 {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances("检测完成", false)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, "检测完成", false)))
 		return
 	}
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(uiErrorMessage(body, status, "检测失败"), true)))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, uiErrorMessage(body, status, "检测失败"), true)))
 }
 
 func (a *App) handleUIActionInstancesCheckAll(c *gin.Context) {
 	status, body, err := a.callAdminAPI(http.MethodPost, "/api/instances/check-all", map[string]any{})
 	if err != nil {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(err.Error(), true)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, err.Error(), true)))
 		return
 	}
 	if status >= 200 && status < 300 {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances("全部实例检测完成", false)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, "全部实例检测完成", false)))
 		return
 	}
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(uiErrorMessage(body, status, "检测失败"), true)))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, uiErrorMessage(body, status, "检测失败"), true)))
 }
 
 func (a *App) handleUIActionInstancesDelete(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	status, body, err := a.callAdminAPI(http.MethodDelete, "/api/instances/"+id, nil)
 	if err != nil {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(err.Error(), true)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, err.Error(), true)))
 		return
 	}
 	if status >= 200 && status < 300 {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances("实例已删除", false)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, "实例已删除", false)))
 		return
 	}
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(uiErrorMessage(body, status, "删除失败"), true)))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, uiErrorMessage(body, status, "删除失败"), true)))
 }
 
 func (a *App) handleUIActionInstancesToggleAutoSwitch(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	instances, err := a.fetchInstances()
 	if err != nil {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(err.Error(), true)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, err.Error(), true)))
 		return
 	}
 	var found *uiInstance
@@ -1339,14 +1559,14 @@ func (a *App) handleUIActionInstancesToggleAutoSwitch(c *gin.Context) {
 		}
 	}
 	if found == nil {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances("实例不存在", true)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, "实例不存在", true)))
 		return
 	}
 	next := !found.AutoSwitch
 	payload := map[string]any{"autoSwitch": next}
 	status, body, err := a.callAdminAPI(http.MethodPut, "/api/instances/"+id, payload)
 	if err != nil {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(err.Error(), true)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, err.Error(), true)))
 		return
 	}
 	if status >= 200 && status < 300 {
@@ -1354,10 +1574,10 @@ func (a *App) handleUIActionInstancesToggleAutoSwitch(c *gin.Context) {
 		if next {
 			text = "自动切换已开启"
 		}
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(text, false)))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, text, false)))
 		return
 	}
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstances(uiErrorMessage(body, status, "更新失败"), true)))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(a.renderTabInstancesForRequest(c, uiErrorMessage(body, status, "更新失败"), true)))
 }
 
 func (a *App) handleUIActionSettingsSave(c *gin.Context) {
@@ -1372,6 +1592,7 @@ func (a *App) handleUIActionSettingsSave(c *gin.Context) {
 		"baseControllerPort":             0,
 		"maxLogLines":                    0,
 		"healthCheckIntervalSec":         0,
+		"healthCheckConcurrency":         0,
 		"subscriptionRefreshIntervalMin": 0,
 	}
 	if v, err := strconv.Atoi(strings.TrimSpace(c.PostForm("baseMixedPort"))); err == nil {
@@ -1385,6 +1606,9 @@ func (a *App) handleUIActionSettingsSave(c *gin.Context) {
 	}
 	if v, err := strconv.Atoi(strings.TrimSpace(c.PostForm("healthCheckIntervalSec"))); err == nil {
 		payload["healthCheckIntervalSec"] = v
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(c.PostForm("healthCheckConcurrency"))); err == nil {
+		payload["healthCheckConcurrency"] = v
 	}
 	if v, err := strconv.Atoi(strings.TrimSpace(c.PostForm("subscriptionRefreshIntervalMin"))); err == nil {
 		payload["subscriptionRefreshIntervalMin"] = v

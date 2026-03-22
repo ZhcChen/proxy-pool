@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,7 +41,53 @@ const (
 var (
 	errSubscriptionNotFound = errors.New("subscription not found")
 	errSubscriptionNoURL    = errors.New("subscription has no url")
+	staticAssetVersion      = buildStaticAssetVersion()
 )
+
+func buildStaticAssetVersion() string {
+	h := sha256.New()
+	for _, assetPath := range []string{
+		"public/style.css",
+		"public/htmx.js",
+		"public/vendor/htmx.min.js",
+	} {
+		body, err := fs.ReadFile(web.PublicFS, assetPath)
+		if err != nil {
+			continue
+		}
+		_, _ = h.Write([]byte(assetPath))
+		_, _ = h.Write(body)
+	}
+	sum := hex.EncodeToString(h.Sum(nil))
+	if len(sum) > 12 {
+		return sum[:12]
+	}
+	if sum == "" {
+		return "dev"
+	}
+	return sum
+}
+
+func uiAssetURL(rawPath string) string {
+	rawPath = strings.TrimSpace(rawPath)
+	if rawPath == "" {
+		return rawPath
+	}
+	sep := "?"
+	if strings.Contains(rawPath, "?") {
+		sep = "&"
+	}
+	return rawPath + sep + "v=" + url.QueryEscape(staticAssetVersion)
+}
+
+func setNoStore(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
+}
 
 type App struct {
 	dataDir string
@@ -771,6 +819,31 @@ func runWithConcurrency[T any](items []T, limit int, fn func(T)) {
 	wg.Wait()
 }
 
+func healthCheckConcurrencyLimit(settings Settings, total int) int {
+	limit := settings.HealthCheckConcurrency
+	if limit < 1 {
+		limit = 2
+	}
+	if total > 0 && limit > total {
+		limit = total
+	}
+	if limit < 1 {
+		return 1
+	}
+	return limit
+}
+
+func subscriptionProxyCheckConcurrencyLimit(_ Settings, total int) int {
+	limit := 1
+	if total > 0 && limit > total {
+		limit = total
+	}
+	if limit < 1 {
+		return 1
+	}
+	return limit
+}
+
 func (a *App) checkAllInstances(onlyRunning bool) {
 	st := a.getState()
 	list := make([]Instance, 0)
@@ -791,7 +864,7 @@ func (a *App) checkAllInstances(onlyRunning bool) {
 	}
 	results := make([]checkResult, 0, len(list))
 	var resultsMu sync.Mutex
-	runWithConcurrency(list, 6, func(inst Instance) {
+	runWithConcurrency(list, healthCheckConcurrencyLimit(settings, len(list)), func(inst Instance) {
 		res := a.mihomo.checkInstance(inst, settings)
 		key := inst.ProxyName
 		if res.ProxyName != nil && strings.TrimSpace(*res.ProxyName) != "" {
@@ -1046,6 +1119,9 @@ func fetchAndParseSubscriptionFromURL(urlStr string) (yamlText string, proxies [
 		addCandidate("flag=clash", u)
 	}
 	errorsList := make([]string, 0)
+	bestCount := -1
+	bestText := ""
+	bestProxies := []MihomoProxy(nil)
 	for _, c := range candidates {
 		text, ferr := fetchText(c.URL)
 		if ferr != nil {
@@ -1061,7 +1137,15 @@ func fetchAndParseSubscriptionFromURL(urlStr string) (yamlText string, proxies [
 			errorsList = append(errorsList, fmt.Sprintf("%s 仅返回提示节点，继续尝试其它格式", c.Label))
 			continue
 		}
-		return text, parsed, c.URL, nil
+		if len(parsed) > bestCount {
+			bestCount = len(parsed)
+			bestText = text
+			bestProxies = parsed
+			effectiveURL = c.URL
+		}
+	}
+	if bestCount >= 0 {
+		return bestText, bestProxies, effectiveURL, nil
 	}
 	if len(errorsList) == 0 {
 		return "", nil, "", fmt.Errorf("拉取订阅失败：无法解析订阅内容")
@@ -1135,6 +1219,7 @@ func (a *App) serveStatic(c *gin.Context) {
 		notFound(c)
 		return
 	}
+	setNoStore(c)
 	ext := strings.ToLower(filepath.Ext(p))
 	switch ext {
 	case ".html":
@@ -1223,6 +1308,7 @@ func (a *App) registerRoutes(r *gin.Engine) {
 	r.GET("/", a.handleHTMXRoot)
 	r.GET("/htmx", a.handleHTMXRoot)
 
+	r.GET("/ui", a.handleUIRootRedirect)
 	r.GET("/ui/page", a.handleUIPage)
 	r.POST("/ui/login", a.handleUILogin)
 	r.POST("/ui/logout", a.handleUILogout)
@@ -1369,10 +1455,69 @@ func (a *App) handleSettingsResetProxyAuth(c *gin.Context) {
 	jsonOK(c, gin.H{"proxyAuth": nextAuth})
 }
 
+func settingsAffectRunningInstances(prev, next Settings) bool {
+	if prev.BindAddress != next.BindAddress {
+		return true
+	}
+	if prev.AllowLan != next.AllowLan {
+		return true
+	}
+	if prev.LogLevel != next.LogLevel {
+		return true
+	}
+	if prev.HealthCheckIntervalSec != next.HealthCheckIntervalSec {
+		return true
+	}
+	if prev.HealthCheckURL != next.HealthCheckURL {
+		return true
+	}
+	if prev.ProxyAuth.Enabled != next.ProxyAuth.Enabled {
+		return true
+	}
+	if prev.ProxyAuth.Username != next.ProxyAuth.Username {
+		return true
+	}
+	if prev.ProxyAuth.Password != next.ProxyAuth.Password {
+		return true
+	}
+	return false
+}
+
+func (a *App) restartRunningInstancesWithSettings(settings Settings) ([]string, []string) {
+	st := a.getState()
+	running := make([]Instance, 0, len(st.Instances))
+	for _, inst := range st.Instances {
+		if a.mihomo.getRuntimeStatus(inst.ID).Running {
+			running = append(running, inst)
+		}
+	}
+	if len(running) == 0 {
+		return []string{}, []string{}
+	}
+
+	binPath, err := a.getInstalledMihomoPath()
+	if err != nil {
+		return []string{}, []string{err.Error()}
+	}
+
+	restarted := make([]string, 0, len(running))
+	errs := make([]string, 0)
+	for _, inst := range running {
+		a.mihomo.stopInstance(inst, 5*time.Second)
+		if err := a.mihomo.start(inst, settings, binPath, a.getSubscriptionProxiesForInstance(inst), ""); err != nil {
+			errs = append(errs, fmt.Sprintf("%s(%s): %v", inst.Name, inst.ID, err))
+			continue
+		}
+		restarted = append(restarted, inst.ID)
+	}
+	return restarted, errs
+}
+
 func (a *App) handleSettingsPut(c *gin.Context) {
 	body := decodeBody(c)
 	st := a.getState()
-	next := st.Settings
+	prev := st.Settings
+	next := prev
 	if _, ok := body["bindAddress"]; ok {
 		v := strings.TrimSpace(asString(body["bindAddress"]))
 		if v == "" {
@@ -1408,6 +1553,14 @@ func (a *App) handleSettingsPut(c *gin.Context) {
 			return
 		}
 		next.HealthCheckIntervalSec = v
+	}
+	if _, ok := body["healthCheckConcurrency"]; ok {
+		v, ok := asInt(body["healthCheckConcurrency"])
+		if !ok || v <= 0 {
+			badRequest(c, "检测并发数必须为正整数", nil)
+			return
+		}
+		next.HealthCheckConcurrency = v
 	}
 	if _, ok := body["subscriptionRefreshIntervalMin"]; ok {
 		v, ok := asInt(body["subscriptionRefreshIntervalMin"])
@@ -1461,7 +1614,19 @@ func (a *App) handleSettingsPut(c *gin.Context) {
 	}
 	a.applyHealthSchedule()
 	a.applySubscriptionRefreshSchedule()
-	jsonOK(c, gin.H{"settings": st.Settings})
+
+	reload := gin.H{
+		"triggered": false,
+		"restarted": []string{},
+		"errors":    []string{},
+	}
+	if settingsAffectRunningInstances(prev, next) {
+		restarted, errs := a.restartRunningInstancesWithSettings(next)
+		reload["triggered"] = true
+		reload["restarted"] = restarted
+		reload["errors"] = errs
+	}
+	jsonOK(c, gin.H{"settings": st.Settings, "instanceReload": reload})
 }
 
 func (a *App) handleSubscriptionsGet(c *gin.Context) {
@@ -1879,7 +2044,7 @@ func (a *App) handleSubscriptionsProxiesCheck(c *gin.Context) {
 	}
 	results := map[string]HealthStatus{}
 	var resultsMu sync.Mutex
-	runWithConcurrency(names, minInt(4, maxInt(1, len(names))), func(name string) {
+	runWithConcurrency(names, subscriptionProxyCheckConcurrencyLimit(a.getState().Settings, len(names)), func(name string) {
 		res := a.mihomo.checkSubscriptionProxyDelay(id, sub.UpdatedAt, sub.Proxies, name, a.getState().Settings, binPath)
 		resultsMu.Lock()
 		results[name] = res

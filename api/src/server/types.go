@@ -55,6 +55,7 @@ type Settings struct {
 	BaseControllerPort     int       `json:"baseControllerPort"`
 	MaxLogLines            int       `json:"maxLogLines"`
 	HealthCheckIntervalSec int       `json:"healthCheckIntervalSec"`
+	HealthCheckConcurrency int       `json:"healthCheckConcurrency"`
 	SubscriptionRefreshMin int       `json:"subscriptionRefreshIntervalMin"`
 	HealthCheckURL         string    `json:"healthCheckUrl"`
 	ExportHost             string    `json:"exportHost"`

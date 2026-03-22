@@ -159,8 +159,8 @@ proxies:
 	if got := atomic.LoadInt32(&noFlagCount); got != 1 {
 		t.Fatalf("期望未带 flag 的探测请求 1 次，实际=%d", got)
 	}
-	if got := atomic.LoadInt32(&clashMetaCount); got != 1 {
-		t.Fatalf("期望 flag=clash-meta 的探测请求 1 次，实际=%d", got)
+	if got := atomic.LoadInt32(&clashMetaCount); got != 2 {
+		t.Fatalf("期望 clash/clash-meta 的探测请求共 2 次，实际=%d", got)
 	}
 	if got := atomic.LoadInt32(&metaCount); got != 1 {
 		t.Fatalf("期望 flag=meta 的请求 1 次，实际=%d", got)
