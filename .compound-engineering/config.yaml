@@ -1,0 +1,5 @@
+# Compound Engineering configuration shared by this project.
+cross_model_review_mode: auto
+cross_model_peer: codex
+cross_model_model: gpt-5.6-luna
+cross_model_effort: max
